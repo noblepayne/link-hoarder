@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+  case $1 in
+      lock)
+          echo "Locking deps.edn"
+	  nix run .#deps-lock
+          echo "Locked"
+          ;;
+      build)
+          echo "Running build..."
+	  nix build
+          echo "Build completed."
+          ;;
+      run)
+          echo "Running..."
+	  shift
+	  nix run . -- $@
+	  echo "Complete."
+	  ;;
+      *)
+          echo "Usage: $0 {lock|build|run}"
+          exit 1
+          ;;
+  esac
