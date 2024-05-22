@@ -38,7 +38,7 @@
                 dotenv.enable = true;
 
                 scripts.format.exec = ''
-                    nixfmt *.nix
+                  nixfmt *.nix
                 '';
                 scripts.lock.exec = ''
                   nix flake lock
