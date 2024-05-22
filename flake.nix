@@ -26,32 +26,35 @@
               {
                 # https://devenv.sh/reference/options/
                 packages = [
-                  pkgs.vscode
-                  pkgs.neovim
                   pkgs.jet
+                  pkgs.neovim
+                  pkgs.nixfmt-rfc-style
+                  pkgs.vscode
                 ];
 
                 languages.clojure.enable = true;
 
-                enterShell = ''
-                  # pick up env vars
-                  eval export $(cat .env)
-                  # start editor
-                  code .
-                '';
+                # N.B. picks up quotes and inline comments
+                dotenv.enable = true;
 
+                scripts.format.exec = ''
+                    nixfmt *.nix
+                '';
                 scripts.lock.exec = ''
                   nix flake lock
                   nix run .#deps-lock
                 '';
-
                 scripts.update.exec = ''
                   nix flake update
                   nix run .#deps-lock
                 '';
-
                 scripts.build.exec = ''
                   nix build .
+                '';
+
+                enterShell = ''
+                  # start editor
+                  code .
                 '';
               }
             )
