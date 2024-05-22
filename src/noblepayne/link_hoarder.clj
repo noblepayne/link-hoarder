@@ -1,6 +1,7 @@
 (ns noblepayne.link-hoarder
   (:gen-class)
-  (:require [clojure.pprint :as pprint]
+  (:require [clojure.java.io :as io]
+            [clojure.pprint :as pprint]
             [clojure.zip :as zip]
             [cybermonday.core :as markdown]
             [hato.client :as http]
@@ -101,23 +102,25 @@
   "Convert h.docs.lol links to markdown download version
    for convenience."
   [url]
-  (let [parsed-url (java.net.URI/create url)
-        scheme (.getScheme parsed-url)
+  (let [parsed-url (io/as-url url)
+        protocol (.getProtocol parsed-url)
         host (.getHost parsed-url)
         path (.getPath parsed-url)]
     (if (= host "h.docs.lol")
       ;; drop query params and add /download to the path
-      (str scheme "://" host path "/download")
+      (str protocol "://" host path "/download")
       url)))
 
 (defn fetch-markdown [url]
-  (-> url
-      fix-hdocs-url
-      http/get
-      :body
-      markdown/parse-body
-      xmlhiccup->xmlparsed
-      hz/hickory-zip))
+  (let [content (if (-> url io/as-file .exists)
+                  ;; read from local filesystem
+                  (slurp url)
+                  ;; read via http
+                  (-> url fix-hdocs-url http/get :body))]
+    (-> content
+        markdown/parse-body
+        xmlhiccup->xmlparsed
+        hz/hickory-zip)))
 
 (defn parse-data-from-markdown [mdzip]
   (assoc (extract-metadata mdzip)
