@@ -1,14 +1,17 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    project-pin.url = "github:noblepayne/project-pin";
+    nixpkgs.follows = "project-pin/nixpkgs";
+    #nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     devenv.url = "github:cachix/devenv";
+    devenv.inputs.nixpkgs.follows = "nixpkgs";
     clj-nix.url = "github:jlesquembre/clj-nix";
     clj-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
-  nixConfig = {
-    extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
-    extra-substituters = "https://devenv.cachix.org";
-  };
+  # nixConfig = {
+  #   extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
+  #   extra-substituters = "https://devenv.cachix.org";
+  # };
   outputs =
     {
       nixpkgs,
