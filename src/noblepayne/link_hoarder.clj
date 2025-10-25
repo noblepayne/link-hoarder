@@ -6,7 +6,8 @@
             [cybermonday.core :as markdown]
             [hato.client :as http]
             [hickory.select :as hs]
-            [hickory.zip :as hz]))
+            [hickory.zip :as hz]
+            [clojure.string :as str]))
 
 (set! *warn-on-reflection* true)
 
@@ -43,6 +44,7 @@
     (map? node) (recur (:content node))
     :else node))
 
+;; TODO: how to handle bold or other style that makes separate elements than just one blockquote
 (defn get-related-blockquote [a-ziploc]
   (let [possible-quote (-> a-ziploc
                            ;; grab next element in tree
@@ -57,6 +59,8 @@
   {:href (-> link-node :attrs :href)
    :title (inner-content link-node)})
 
+;; TODO: how to handle multiple? use first?
+;; TODO: more distinct signal? Links could be reused.
 (defn find-links
   ([initial-ziploc]
    (find-links initial-ziploc
@@ -77,7 +81,11 @@
                   (find-links (zip/next next-link))))))))
 
 (defn extract-links [md-zip]
-  (for [loc (find-links md-zip)]
+  (for [loc (find-links md-zip)
+        :let [link-data (extract-link-data (zip/node loc))]
+        ;; n.b. leaving as (:title link-data) to blow up on empty title)
+        ;; TODO: proper validation
+        :when (not (str/starts-with? (:title link-data) "READ:"))]
     (assoc
        ;; use extracted link info map as base response
      (extract-link-data (zip/node loc))
@@ -90,13 +98,20 @@
     (->> ziploc
          hs/after-subtree
          zip/node
-         inner-content)))
+         inner-content
+         str/trim)))
 
 (defn extract-metadata [md-zip]
-  {:episode     (extract-single-meta md-zip :episode)
+  {:show        (extract-single-meta md-zip :show)
+   :episode     (extract-single-meta md-zip :episode)
    :title       (extract-single-meta md-zip :title)
    :description (extract-single-meta md-zip :description)
-   :tags        (extract-single-meta md-zip :tags)})
+   :tags        (->> (extract-single-meta md-zip :tags)
+                     (#(str/split % #","))
+                     (map str/trim)
+                     (filter seq)
+                     distinct
+                     (str/join ", "))})
 
 (defn fix-hdocs-url
   "Convert h.docs.lol links to markdown download version
@@ -138,4 +153,17 @@
   (-> url
       fetch-markdown
       parse-data-from-markdown
-      pprint/pprint))
+      #_pprint/pprint))
+
+
+(comment
+  (use 'clojure.repl 'clojure.pprint)
+
+  (def data
+    (-main
+     "https://h.docs.lol/l4-JAZNoSq21j5YQtE4ZAg#"))
+  
+  data
+
+  (spit "/tmp/data" data)
+  )
