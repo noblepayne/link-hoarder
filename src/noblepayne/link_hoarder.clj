@@ -65,7 +65,7 @@
   ([initial-ziploc]
    (find-links initial-ziploc
                ;; if we have a `### Links` starting point, use that.
-               (or (hs/select-next-loc (hs/id :links) initial-ziploc)
+               (or (hs/select-next-loc (hs/id "show-links") initial-ziploc)
                    initial-ziploc)))
   ([_ current-ziploc]
    (let [next-link (hs/select-next-loc
@@ -159,9 +159,10 @@
 (comment
   (use 'clojure.repl 'clojure.pprint)
 
+  ;; TODO empty ### breaks
   (def data
     (-main
-     "https://h.docs.lol/l4-JAZNoSq21j5YQtE4ZAg#"))
+     ""))
   
   data
 

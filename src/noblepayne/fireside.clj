@@ -162,7 +162,7 @@
   (try
     (purge-links {:client c
                   :podcast "linuxunplugged"
-                  :episode-guid "d331e3f7-e0c2-4cab-979b-3dcb0596f026"})
+                  :episode-guid "4c0a537d-10c6-40ca-b44c-9a43891313c6"})
     (catch Exception e (def error e) (throw e)))
 
   
@@ -175,12 +175,11 @@
     (catch Exception e (def error e) (throw e)))
 
   (doseq [{:strs [startTime title] :as chapter}
-          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 636 (Premium).txt")]
+          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 639 (Premium).txt")]
     (println title)
     (add-chapter {:client c
                   :podcast "adfree"
-#_"863ea8c8-c572-4b88-bfb4-e03fe73280dd"
-                  :episode-guid "c17651a5-42ab-455e-b591-37aa043ecf54" 
+                  :episode-guid "6bb0d21f-755f-4a22-b42f-a5c956c95fc2" 
                   :timecode startTime
                   :note title}))
 
@@ -275,7 +274,7 @@
     (println href)
     (add-link {:client c
                :podcast "adfree"
-               :episode-guid "a8f57850-5933-4536-aeaf-cfb1c7ba1fff"
+               :episode-guid "6bb0d21f-755f-4a22-b42f-a5c956c95fc2"
                :title title
                :url href
                :quote quote}))
@@ -283,7 +282,7 @@
   (try
     (set-show-meta {:client c
                     :podcast "adfree"
-                    :episode-guid "863ea8c8-c572-4b88-bfb4-e03fe73280dd"
+                    :episode-guid "6bb0d21f-755f-4a22-b42f-a5c956c95fc2"
                     :title (:title noblepayne.link-hoarder/data)
                     :description (:description noblepayne.link-hoarder/data)
                     :tags (:tags noblepayne.link-hoarder/data)})
