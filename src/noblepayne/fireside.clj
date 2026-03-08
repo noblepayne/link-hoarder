@@ -148,7 +148,6 @@
                          (map (fn [[ts title]] {"startTime" ts #_`(~'ts->s ~ts)
                                                 "title" title})))]
     (into [] chapter-xf chapter-lines)))
-  
 
 (comment
 
@@ -161,11 +160,10 @@
 
   (try
     (purge-links {:client c
-                  :podcast "linuxunplugged"
-                  :episode-guid "4c0a537d-10c6-40ca-b44c-9a43891313c6"})
+                  :podcast (:podcast noblepayne.link-hoarder/data)
+                  :episode-guid (:guid noblepayne.link-hoarder/data)})
     (catch Exception e (def error e) (throw e)))
 
-  
   (try
     (add-chapter {:client c
                   :podcast "linuxunplugged"
@@ -175,15 +173,13 @@
     (catch Exception e (def error e) (throw e)))
 
   (doseq [{:strs [startTime title] :as chapter}
-          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 639 (Premium).txt")]
+          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 656 (Premium).txt")]
     (println title)
     (add-chapter {:client c
-                  :podcast "adfree"
-                  :episode-guid "6bb0d21f-755f-4a22-b42f-a5c956c95fc2" 
+                  :podcast (:podcast noblepayne.link-hoarder/data)
+                  :episode-guid  (:guid noblepayne.link-hoarder/data)
                   :timecode startTime
-                  :note title}))
-
-  )
+                  :note title})))
 
 (defn xmlparsed->xmlhiccup [tree]
   (if (string? tree)
@@ -200,7 +196,6 @@
           (into [tag] translated-content)
           (into [tag attrs] translated-content))
         metadata))))
-
 
 (defn set-metedata [{:keys [client podcast episode-guid metadata]}]
   (let [action-url (str/join "/"
@@ -269,20 +264,19 @@
     :url "http://test.url"
     :quote "test quote"})
 
-
   (doseq [{:keys [:title :href :quote] :as link} (noblepayne.link-hoarder/data :links)]
     (println href)
     (add-link {:client c
-               :podcast "adfree"
-               :episode-guid "6bb0d21f-755f-4a22-b42f-a5c956c95fc2"
+               :podcast (:podcast noblepayne.link-hoarder/data)
+               :episode-guid (:guid noblepayne.link-hoarder/data)
                :title title
                :url href
                :quote quote}))
 
   (try
     (set-show-meta {:client c
-                    :podcast "adfree"
-                    :episode-guid "6bb0d21f-755f-4a22-b42f-a5c956c95fc2"
+                    :podcast (:podcast noblepayne.link-hoarder/data)
+                    :episode-guid (:guid noblepayne.link-hoarder/data)
                     :title (:title noblepayne.link-hoarder/data)
                     :description (:description noblepayne.link-hoarder/data)
                     :tags (:tags noblepayne.link-hoarder/data)})

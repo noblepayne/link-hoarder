@@ -102,7 +102,8 @@
          str/trim)))
 
 (defn extract-metadata [md-zip]
-  {:show        (extract-single-meta md-zip :show)
+  {:guid        (extract-single-meta md-zip :guid)
+   :show        (extract-single-meta md-zip :show)
    :episode     (extract-single-meta md-zip :episode)
    :title       (extract-single-meta md-zip :title)
    :description (extract-single-meta md-zip :description)
@@ -155,16 +156,21 @@
       parse-data-from-markdown
       #_pprint/pprint))
 
-
 (comment
   (use 'clojure.repl 'clojure.pprint)
 
   ;; TODO empty ### breaks
   (def data
     (-main
-     ""))
-  
-  data
+     "https://h.docs.lol/Gg7At48CTLmpaJJZUvlEig?both"))
 
-  (spit "/tmp/data" data)
-  )
+  data
+  ;; ads
+  (def data (assoc data :podcast "linuxunplugged"))
+  (def data (assoc data :guid ""))
+  ;; adfree
+  (def data (assoc data :podcast "adfree"))
+
+  (def data (assoc data :guid "a721d567-bed9-49d5-9dc5-aaa8b3e776a0"))
+
+  (spit "/tmp/data" data))
