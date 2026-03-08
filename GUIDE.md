@@ -6,10 +6,12 @@
 2. **Associate podcast + guid** - either:
    - `linuxunplugged` + guid from markdown
    - `adfree` + specific guid (different feed)
-3. **Push to Fireside**:
+3. **Extract guests** from markdown (optional section with bio)
+4. **Push to Fireside**:
    - `set-show-meta` - title, description, tags
    - `purge-links` - clear old links (for updates)
    - `add-link` loop - add all links
+   - Guests → podcast:person in RSS feed (via feed-fusion)
 
 ## Step-by-Step Guide
 
@@ -102,7 +104,11 @@
                          :episode-guid (:guid data)
                          :title title
                          :url href
-                         :quote quote}))))
+                         :quote quote}))
+    ;; Guests available in (:guests data)
+    ;; Structure: [{:name "..." :href "..." :role "guest" :bio "..."}]
+    ;; Push to feed-fusion for RSS generation with podcast:person tags
+    data))
 ```
 
 ### 2. Batch mode
@@ -129,7 +135,8 @@ Preview what would be pushed without making API calls:
      :description (:description data)
      :tags (:tags data)
      :link-count (count (:links data))
-     :links (mapv :href (:links data))}))
+     :links (mapv :href (:links data))
+     :guests (mapv :name (:guests data))}))
 
 (dry-run "https://h.docs.lol/URL?both" "linuxunplugged")
 ```
@@ -161,4 +168,28 @@ Incorporate the chapter file loading from fireside.clj to add chapters automatic
                           :episode-guid (:guid data)
                           :timecode startTime
                           :note title})))
+```
+
+### 7. Guest handling
+
+Guests are extracted from markdown and available in the data map. The bio field is first-class data that can be used by feed-fusion for RSS generation:
+
+```clojure
+;; Guests from markdown
+(:guests data)
+;; => [{:name "John Smith"
+;;      :href "https://example.com/john"
+;;      :role "guest"
+;;      :bio "John is a software engineer from Boston"}
+;;     {:name "Jane Doe"
+;;      :href "https://example.com/jane"
+;;      :role "guest"
+;;      :bio "Jane is a DevOps engineer"}]
+
+;; Pass to feed-fusion for podcast:person tags in RSS
+(feed-fusion/make-item* {:title (:title data)
+                         :guid (:guid data)
+                         :guests (:guests data)
+                         ;; ...other fields
+                         })
 ```

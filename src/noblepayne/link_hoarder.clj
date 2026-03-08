@@ -81,17 +81,47 @@
                   (find-links (zip/next next-link))))))))
 
 (defn extract-links [md-zip]
-  (for [loc (find-links md-zip)
-        :let [link-data (extract-link-data (zip/node loc))]
-        ;; n.b. leaving as (:title link-data) to blow up on empty title)
-        ;; TODO: proper validation
-        :when (not (str/starts-with? (:title link-data) "READ:"))]
-    (assoc
-       ;; use extracted link info map as base response
-     (extract-link-data (zip/node loc))
-       ;; add any associated blockquote text
-     :quote
-     (get-related-blockquote loc))))
+  (vec
+   (for [loc (find-links md-zip)
+         :let [link-data (extract-link-data (zip/node loc))]
+         :when (not (str/starts-with? (:title link-data) "READ:"))]
+     (assoc (extract-link-data (zip/node loc))
+            :quote
+            (get-related-blockquote loc)))))
+
+(defn extract-guest-data [link-node]
+  {:name  (inner-content link-node)
+   :href  (-> link-node :attrs :href)
+   :role  "guest"
+   :bio   nil})
+
+(defn find-guests
+  ([initial-ziploc]
+   (find-guests initial-ziploc
+                ;; if we have a `### Guests` starting point, use that.
+                (or (hs/select-next-loc (hs/id "show-guests") initial-ziploc)
+                    initial-ziploc)))
+  ([_ current-ziploc]
+   (let [next-link (hs/select-next-loc
+                    (hs/tag :a)
+                    current-ziploc
+                    zip/next
+                    ;; continue scanning until end or `### End Guests`
+                    #(or (zip/end? %)
+                         ((hs/id :end-guests) %)))]
+     (when next-link
+       (lazy-seq (cons
+                  next-link
+                  (find-guests (zip/next next-link))))))))
+
+(defn extract-guests [md-zip]
+  (vec
+   (for [loc (find-guests md-zip)
+         :let [guest-data (extract-guest-data (zip/node loc))]
+         :when (seq (:name guest-data))]
+     (assoc guest-data
+            :bio
+            (get-related-blockquote loc)))))
 
 (defn- extract-single-meta [md-zip id]
   (when-let [ziploc (hs/select-next-loc (hs/id id) md-zip)]
@@ -141,7 +171,9 @@
 (defn parse-data-from-markdown [mdzip]
   (assoc (extract-metadata mdzip)
          :links
-         (extract-links mdzip)))
+         (extract-links mdzip)
+         :guests
+         (extract-guests mdzip)))
 
 ;; (defn exec
 ;;   "Invoke me with clojure -X noblepayne.link-hoarder/exec"

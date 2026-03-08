@@ -1,8 +1,9 @@
 # link-hoarder
-Scrape metadata and links from markdown. Intended for use in podcast production at Jupiter Broadcasting.
+Scrape metadata, links, and guests from markdown. Intended for use in podcast production at Jupiter Broadcasting.
 
 ## Example Markdown
-The following markdown document would produce
+
+### Links Section
 ```markdown
 # Some Markdown Document
 #### Episode
@@ -25,15 +26,35 @@ podcast, example, markdown
 + [also not captured](https://example.com/example)
 ```
 
-this data:
+### Guests Section
+```markdown
+#### Guests
++ [John Smith](https://example.com/john)
+  > John is a software engineer from Boston
 
++ [Jane Doe](https://example.com/jane)
+  > Jane is a DevOps engineer specializing in Kubernetes
+
+#### End Guests
+```
+
+Output:
 ```clojure
 {:episode "111",
  :title "My Great Show",
  :description "this is an example episode",
  :tags "podcast, example, markdown",
  :links
- ({:href "https://example.com/example2",
+ [{:href "https://example.com/example2",
    :title "a link",
-   :quote "A quote or excerpt from the link"})}
+   :quote "A quote or excerpt from the link"}],
+ :guests
+ [{:name "John Smith",
+   :href "https://example.com/john",
+   :role "guest",
+   :bio "John is a software engineer from Boston"},
+  {:name "Jane Doe",
+   :href "https://example.com/jane",
+   :role "guest",
+   :bio "Jane is a DevOps engineer specializing in Kubernetes"}]}
 ```
