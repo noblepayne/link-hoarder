@@ -323,7 +323,97 @@ See [Podcast Taxonomy Project](https://podcasttaxonomy.com/) for full list.
 - Don't spin for hours fixing unbalanced parens
 - After 2-3 attempts, just rewrite the function/file
 
-### Debugging Strategies
+**Safety Protocol: Destructive Git Commands:**
+
+- NEVER use `git checkout -- file` to "fix" syntax errors. It discards ALL uncommitted work.
+- Use VSCode Local History (`~/.config/Code/User/History`) or LSP undo features instead.
+- If you mess up, check `RECOVERY_SOURCE.clj` patterns or LSP backups first.
+
+### Agent + REPL Interaction Pattern
+
+#### The Core Problem
+
+In Clojure, there are two sources of truth:
+
+1. **Files on disk** - Permanent, but can't execute
+2. **REPL namespace** - Can execute, but ephemeral
+
+When an agent connects to a running REPL, it sees whatever the human has loaded—not necessarily what's in the files.
+
+#### Recommended Workflow
+
+**Step 1: Fresh Agent Session**
+
+```
+1. Read source files from disk (use glob + read)
+2. Find running nREPL (use list-nrepl-ports)
+3. Connect and inspect what's loaded
+```
+
+**Step 2: Understand What's There**
+
+```clojure
+;; Check what data is already loaded
+(if-let [v (resolve 'noblepayne.link-hoarder/data)]
+  @v
+  "not found")
+
+;; List all vars in a namespace
+(keys (ns-publics 'noblepayne.link-hoarder))
+```
+
+**Step 3: Decide Mode**
+
+- **REPL-first**: Use clojure_eval to test/verify, then persist with file_edit
+- **File-first**: Edit files, then human must reload in REPL
+
+#### Comment Blocks as Scratch Space
+
+Source files contain `(comment ...)` blocks at the bottom. These are evaluated when loaded into REPL, creating persistent vars for exploration:
+
+```clojure
+;; From link_hoarder.clj comment block:
+(def data
+  (-main
+   "https://h.docs.lol/6qhYpqFBQiOc5vdJE70wjg?both#"))
+
+;; After evaluation, available as:
+noblepayne.link-hoarder/data
+```
+
+**Pattern:**
+
+1. Human loads namespace (comment block runs)
+2. Agent connects, finds `data` var
+3. Agent can read `@(resolve 'noblepayne.link-hoarder/data)`
+
+#### Key Commands for Agent
+
+```clojure
+;; Find nREPL port
+clojure-dev_list_nrepl_ports
+
+;; Evaluate in running REPL
+clojure-dev_clojure_eval {:code "(+ 1 2)" :port 36739}
+
+;; Reload namespace (for file changes)
+(require 'noblepayne.link-hoarder :reload)
+
+;; Check what's in namespace
+(ns-publics 'noblepayne.link-hoarder)
+(ns-map 'noblepayne.link-hoarder)
+```
+
+#### Sync Strategy
+
+When agent edits a file:
+
+1. Edit the file (file_edit or clojure_edit)
+2. Tell human: "Please reload the namespace"
+3. Human runs: `(require 'noblepayne.link-hoarder :reload)`
+4. Agent verifies: re-evaluate to confirm
+
+#### Debugging Strategies
 
 **1. Print Debugging (Still Valid):**
 
@@ -340,6 +430,198 @@ See [Podcast Taxonomy Project](https://podcasttaxonomy.com/) for full list.
 ;; Test function
 (noblepayne.link-hoarder/-main "https://example.com")
 ```
+
+## Link Cleanup Workflow (Episode Publishing)
+
+This workflow is used to prepare links from show notes for publication (e.g., episode 662 "The GitHub Diet").
+
+### The Process
+
+1. **Load data** - Connect to nREPL, find the data var (usually `noblepayne.link-hoarder/data`)
+2. **Initial cleanup** - Simplify long titles, add "Pick:" prefix to last 3 links
+3. **Quote extraction** - Fetch pages, extract meaningful descriptions
+4. **Polish** - Capitalize, fix grammar, use semicolons instead of em-dashes
+5. **Preview** - Generate HTML preview for approval
+
+### Tools for Quote Extraction
+
+**Primary tool: `searxng_read_url`**
+- Converts pages to clean markdown
+- Good for project homepages, docs, tutorials
+
+**For technical content: `websearch` + `searxng_read_url`**
+- Search for context on complex topics (e.g., "Btrfs remap-tree Linux 7.0")
+- Read the LWN article or Reddit discussion for better quotes
+
+**For raw HTML: `searxng_http_request`**
+- Use when searxng markdown conversion fails
+- Check for embedded meta descriptions
+
+**Last resort: Chrome tools**
+- Use only if searxng fails completely
+- Good for interactive pages or JavaScript-rendered content
+
+### What Makes a Good Quote
+
+- **From the project itself** - Forgejo's own description tells the story best
+- **Technical accuracy** - Btrfs "translation layer" is more informative than "new feature"
+- **Explains the "why"** - "Liberate your software from proprietary shackles"
+- **Avoid marketing fluff** - Skip generic "revolutionary" type language
+
+### Quote Style Guide
+
+- Capitalize first letter
+- Use semicolons to separate clauses (e.g., "Self-hosted alternative to GitHub; liberate your software...")
+- Keep it concise but descriptive
+- No em-dashes unless necessary
+- Use `<quote>` to indicate when quoting directly from source
+
+### REPL Workflow for Updates
+
+```clojure
+;; Update links in memory
+(def updated-links
+  (mapv (fn [link]
+          (case (:href link)
+            "https://example.com"
+            (assoc link :quote "New quote here")
+            link))
+        (:links noblepayne.link-hoarder/data)))
+
+(def data (assoc data :links updated-links))
+
+;; Push to namespace var
+(alter-var-root #'noblepayne.link-hoarder/data (fn [_] data))
+
+;; Generate preview
+(noblepayne.link-hoarder/save-preview data)
+```
+
+### Common Patterns
+
+**Linux kernel features** (phoronix):
+- Search for technical details if title is vague
+- LWN.net often has excellent technical explanations
+- Quote the key innovation, not just the feature name
+
+**Self-hosted software** (Forgejo, opengist):
+- Use the project's own tagline
+- Explain what problem it solves
+
+**Picks** (last 3 links):
+- Already have "Pick:" prefix
+- Add quotes that explain why it's interesting
+- Keep short and punchy
+
+### What We Learned
+
+- It's okay to be "maximalist" with quotes - more context is better than less
+- One round of polish isn't enough; three passes: initial → dig deeper → polish
+- The REPL is the source of truth during editing, not the file
+- `save-preview` generates the approved preview file
+
+### HedgeDoc Sync Workflow
+
+We ARE the scraper - our data comes FROM HedgeDoc. When we sync back, we're sending our polished corrections BACK to the source.
+
+#### HedgeDoc Structure
+
+- **Links scattered throughout** - not in a dedicated section
+- **Various formats** - `### [title](url)` for section headers, `[title](url)` inline, `- [title](url)` in lists
+- **Quotes use `>` blockquotes** - our scraper grabs lines starting with `>` after each link
+- **Talking points use `+`** - these are for the show, not scraped as quotes
+- **Our data is already deduped** - duplicates in HedgeDoc are filtered out when scraping
+
+#### Sync Specification (Action/Calculation/Data Pattern)
+
+```clojure
+;; DATA (Immutable)
+(def our-data {:links [{:href "..." :title "..." :quote "..."} ...]})
+(def hedge-doc-state {"url" -> {:line 123 :title "..." :hasQuote true/false :quote "..."}})
+
+;; CALCULATIONS (pure - no side effects)
+(defn normalize-url [url] "Strip tracking params")
+(defn url-match [url hedge-index] "Find by URL")
+(defn decide-update [our-link hedge-match]
+  ;; :add - no quote in hedge, add ours
+  ;; :skip-protect - has quote, different (preserve existing)
+  ;; :skip-identical - has quote, same
+  ;; :skip-new - not in hedge (need to add))
+(defn proposed-change [our-link hedge-match decision]
+  "Returns what WOULD change - for dry run audit")
+
+;; ACTIONS (side effects)
+(defn audit-sync [our-data hedge-index] "Dry run - returns audit report")
+(defn execute-sync! [approved-changes] "Real sync after human approval")
+```
+
+#### Decision Rules
+
+| HedgeDoc Has `>` Quote? | Matches Ours? | Action |
+|-----------------------|---------------|--------|
+| ✓ | ✓ | SKIP (already good) |
+| ✓ | ✗ | PROTECT (preserve existing) |
+| ✗ | - | ADD (our polished quote) |
+
+#### Dry Run Audit Format
+
+```
+PROTECT: https://sfconservancy.org/GiveUpGitHub/ → "We realize this..." (line 321)
+ADD:    https://www.phoronix.com/news/Linux-7.0-Btrfs-Changes → "A translation layer..." (line 281)
+SKIP:   https://github.com/thereisnotime/sshroute (already matches)
+```
+
+#### Finding Links in HedgeDoc
+
+The chrome skill doesn't work on CodeMirror (virtual rendering). Use JavaScript evaluation:
+
+```javascript
+chrome_evaluate_script {
+  function: "() => (...)"
+}
+```
+
+See `hedgedoc-editor` skill for CodeMirror API details.
+
+#### Common Gotchas in Sync
+
+1. **URL format variations** - trailing slash, http vs https, query params → normalize before matching
+2. **Multiple occurrences** - update first only, dedupe after in our data
+3. **List format** - links in `- [title](url)` format still match
+4. **Don't overwrite existing good quotes** - our pipeline filters those
+5. **Reverse Order Processing**: When syncing back to HedgeDoc, ALWAYS process updates in reverse order (bottom-to-top) to avoid line number shifts.
+
+### Reflections from Episode 662 ("The GitHub Diet")
+
+**Quote extraction is harder than it looks:**
+- searxng often strips to just metadata - not enough detail
+- websearch finds better context (Reddit, LWN discussions)
+- Raw HTTP fetching gives you the HTML to parse yourself
+- Sometimes you just have to write it from understanding
+
+**Linux 7.0 articles on Phoronix:**
+- Titles are feature headlines, not explanations
+- Need websearch for the "why" behind the feature
+- LWN.net has the best technical deep-dives
+- Example: "remap-tree" is a "translation layer of logical block addresses"
+
+**Forgejo ecosystem:**
+- Main site has good marketing copy ("liberate your software from proprietary shackles")
+- Wiki NixOS page is more technical ("fork of Gitea")
+- Codeberg issues/PRs tell the story of features
+- Federation = "enabling decentralized software development"
+
+**Quote philosophy:**
+- From the project itself when possible
+- Explain what problem it solves, not just what it is
+- Semi-colons better than em-dashes for flow
+- Maximalist is fine - listeners can skip if they want
+
+**The Disaster Recovery Lesson:**
+- We lost uncommitted work due to a `git checkout` error.
+- **Root Cause**: Attempting to fix syntax errors by reverting the file instead of fixing the parens.
+- **Recovery**: VSCode's local history saved us. We found a high-fidelity recovery point in `~/.config/Code/User/History`.
+- **New Mantra**: "Commit early, commit often, and never use checkout to fix a bracket."
 
 ## Commit Message Guidelines
 

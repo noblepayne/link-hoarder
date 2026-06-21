@@ -29,7 +29,7 @@
 
 (defn form->map [form]
   (let [form-attrs (:attrs form)
-        form-inputs (hs/select (hs/attr :type #{"hidden"}) #_(hs/attr :name)  form)]
+        form-inputs (hs/select (hs/attr :type #{"hidden"}) #_(hs/attr :name) form)]
     {:form-attrs form-attrs
      :form-inputs (into {} (comp (map (comp (juxt :name :value) :attrs))
                                  (filter first)) form-inputs)}))
@@ -57,7 +57,7 @@
   (let [new-url (str/join "/" [FIRESIDE-BASE-URL
                                "podcasts" podcast
                                "episodes" episode-guid
-                               "links"    "new"])
+                               "links" "new"])
         new-url-page (fetch-as-hickory {:http-client client :url new-url})
         [links-form] (hs/select (hs/and (hs/id "new_link"))
                                 new-url-page)
@@ -80,7 +80,7 @@
   (let [delete-url (str/join "/" [FIRESIDE-BASE-URL
                                   "podcasts" podcast
                                   "episodes" episode-guid
-                                  "links"    link-guid])
+                                  "links" link-guid])
         link-url (str delete-url "/edit")
         links-url-page (fetch-as-hickory {:http-client client
                                           :url link-url})
@@ -105,16 +105,18 @@
                                ;; header row doesn't have id attr, we only want data rows
                                (hs/attr :id))
                        links-url-page)
-        link-guids (mapv (fn [tr]
-                           (let [[atag] (hs/select (hs/and (hs/tag :a)
-                                                           (hs/attr :title #{"Edit Link"}))
-                                                   tr)
-                                 edit-link (-> atag :attrs :href)
-                                 link-guid (->> (str/split edit-link #"/")
-                                                reverse
-                                                second)]
-                             link-guid))
-                         trs)]
+        link-guids (->> trs
+                        (map (fn [tr]
+                               (let [[atag] (hs/select (hs/and (hs/tag :a)
+                                                               (hs/class "data-table__link"))
+                                                       tr)
+                                     edit-link (-> atag :attrs :href)]
+                                 (when edit-link
+                                   (-> (str/split edit-link #"/")
+                                       reverse
+                                       second)))))
+                        (filter identity)
+                        vec)]
     (doseq [link-guid link-guids]
       (println "Deleting" link-guid)
       (delete-link (assoc args :link-guid link-guid)))))
@@ -123,7 +125,7 @@
   (let [new-url (str/join "/" [FIRESIDE-BASE-URL
                                "podcasts" podcast
                                "episodes" episode-guid
-                               "chapters"    "new"])
+                               "chapters" "new"])
         new-url-page (fetch-as-hickory {:http-client client :url new-url})
         [chapter-form] (hs/select (hs/and (hs/id "new_chapter"))
                                   new-url-page)
@@ -152,6 +154,7 @@
 (comment
 
   (try
+
     (delete-link {:client c
                   :podcast "linuxunplugged"
                   :episode-guid "869b643f-3e5b-4020-aec1-0ec3f2f26287"
@@ -173,13 +176,121 @@
     (catch Exception e (def error e) (throw e)))
 
   (doseq [{:strs [startTime title] :as chapter}
-          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 656 (Premium).txt")]
+          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 671 Ads.txt")]
     (println title)
     (add-chapter {:client c
                   :podcast (:podcast noblepayne.link-hoarder/data)
-                  :episode-guid  (:guid noblepayne.link-hoarder/data)
+                  :episode-guid (:guid noblepayne.link-hoarder/data)
                   :timecode startTime
                   :note title})))
+
+(defn prepare-data
+  "Fetch markdown from url and prepare data with podcast association.
+  Returns data map with :podcast set."
+  [url podcast]
+  (-> (noblepayne.link-hoarder/-main url)
+      (assoc :podcast podcast)))
+
+(defn- unreverse-tags
+  "Reverse tags back to original order for Fireside.
+   Handles string input and ensures clean comma separation."
+  [tags]
+  (if (string? tags)
+    (->> (clojure.string/split tags #",")
+         (map clojure.string/trim)
+         (filter seq)
+         reverse
+         (clojure.string/join ", "))
+    tags))
+
+(defn ensure-login
+  "Create client and login to Fireside. Returns client."
+  []
+  (let [client (http-client)]
+    (login-to-fireside client)
+    client))
+
+(declare set-show-meta)
+(defn set-metadata
+  "Set episode metadata (title, description, tags).
+  Requires logged-in client and prepared data."
+  [client data]
+  (set-show-meta {:client client
+                  :podcast (:podcast data)
+                  :episode-guid (:guid data)
+                  :title (:title data)
+                  :description (:description data)
+                  :tags (:tags data)}))
+
+(defn publish-episode
+  "Full workflow: fetch markdown data and push to Fireside.
+  
+  url - docs.lol show notes URL
+  podcast - podcast slug (e.g. \"linuxunplugged\", \"adfree\")
+  guid-override - optional GUID to use instead of markdown GUID (for adfree)
+  
+  Returns: {:data parsed-data :client client :link-count N :meta-set? true :purged? true}"
+  ([url]
+   (publish-episode url "linuxunplugged" nil))
+  ([url podcast]
+   (publish-episode url podcast nil))
+  ([url podcast guid-override]
+   (let [_ (println "Fetching markdown data from" url)
+         data (-> url
+                  noblepayne.link-hoarder/-main
+                  (assoc :podcast podcast)
+                  (update :guid #(or guid-override %)))
+         guid (:guid data)
+         links (:links data)
+         total (count links)]
+     (when (not guid)
+       (throw (ex-info "No GUID available - check markdown or provide guid-override"
+                       {:podcast podcast :url url})))
+     (println "Episode GUID:" guid)
+     (println "Podcast:" podcast)
+     (println "Links to add:" total)
+     (println "Guests:" (count (:guests data)))
+
+     (println "Creating HTTP client...")
+     (let [client (http-client)]
+       (println "Logging in to Fireside...")
+       (login-to-fireside client)
+       (println "Login successful")
+
+       (println "Setting episode metadata...")
+       (set-show-meta {:client client
+                       :podcast podcast
+                       :episode-guid guid
+                       :title (:title data)
+                       :description (:description data)
+                       :tags (:tags data)})
+       (println "Metadata updated")
+
+       (println "Purging existing links...")
+       (purge-links {:client client
+                     :podcast podcast
+                     :episode-guid guid})
+       (println "Links purged")
+
+       (println "Adding" total "new links...")
+       (doseq [{:keys [title href quote]} links
+               [idx] (map-indexed vector links)
+               :let [link-num (inc idx)]]
+         (println (format "  [%d/%d] %s" link-num total (or title href)))
+         (add-link {:client client
+                    :podcast podcast
+                    :episode-guid guid
+                    :title title
+                    :url href
+                    :quote quote}))
+       (println "All links added")
+
+       {:data data
+        :client client
+        :link-count total
+        :guest-count (count (:guests data))
+        :meta-set? true
+        :purged? true}))))
 
 (defn xmlparsed->xmlhiccup [tree]
   (if (string? tree)
@@ -212,10 +323,12 @@
         form-params (assoc metadata
                            "authenticity_token" auth-token
                            "_method" (get-in form-map [:form-inputs "_method"])
-                           "utf8" (get-in form-map [:form-inputs "utf8"]))]
-    (http/post action-url {:http-client client
-                           :form-params form-params})
-    true))
+                           "utf8" (get-in form-map [:form-inputs "utf8"]))
+        response (http/post action-url {:http-client client
+                                        :form-params form-params})]
+    (if (= 200 (:status response))
+      true
+      (throw (ex-info "Failed to set metadata" {:status (:status response) :body (:body response)})))))
 
 (defn set-show-meta [{:keys [client
                              podcast
@@ -223,14 +336,15 @@
                              title
                              description
                              tags]}]
-  (set-metedata {:client client
-                 :podcast podcast
-                 :episode-guid episode-guid
-                 :metadata {"episode[title]" title
-                            "episode[subtitle]" description
-                            "episode[description]" description
-                            "episode[keywords]" tags
-                            "episode[tag_list]" tags}}))
+  (let [tags-normalized (unreverse-tags tags)]
+    (set-metedata {:client client
+                   :podcast podcast
+                   :episode-guid episode-guid
+                   :metadata {"episode[title]" title
+                              "episode[subtitle]" description
+                              "episode[description]" description
+                              "episode[keywords]" tags-normalized
+                              "episode[tag_list]" tags-normalized}})))
 
 (comment
   (def c (http-client))

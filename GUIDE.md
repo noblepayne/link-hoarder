@@ -2,194 +2,100 @@
 
 ## What We Do
 
-1. **Fetch show notes** from docs.lol URL via `link-hoarder/-main`
+1. **Fetch show notes** from docs.lol URL via `link-hoarder/-main` or `fireside/prepare-data`
 2. **Associate podcast + guid** - either:
    - `linuxunplugged` + guid from markdown
    - `adfree` + specific guid (different feed)
 3. **Extract guests** from markdown (optional section with bio)
 4. **Push to Fireside**:
-   - `set-show-meta` - title, description, tags
+   - `set-metadata` - title, description, tags (automatically unreverses reversed tags)
    - `purge-links` - clear old links (for updates)
    - `add-link` loop - add all links
    - Guests → podcast:person in RSS feed (via feed-fusion)
 
-## Step-by-Step Guide
+## Composable API
 
-### 1. Load namespaces
+We've moved toward a more robust, composable API in `noblepayne.fireside` and `noblepayne.link-hoarder`.
 
+### 1. Data Preparation
 ```clojure
-(require 'noblepayne.link-hoarder)
-(require 'noblepayne.fireside)
+(require '[noblepayne.link-hoarder :as lh])
+(require '[noblepayne.fireside :as fs])
+
+;; Fetch and prepare (sets podcast slug and handles initial parsing)
+(def data (fs/prepare-data "https://h.docs.lol/URL" "linuxunplugged"))
+
+;; For Ad-Free (override GUID)
+(def adfree-data (assoc data :podcast "adfree" :guid "ADFREE-GUID-HERE"))
 ```
 
-### 2. Login to Fireside
-
+### 2. Previews
 ```clojure
-(def c (noblepayne.fireside/http-client))
-(noblepayne.fireside/login-to-fireside c)
+;; HTML Preview (Dark mode, Pico CSS, includes robust copy buttons)
+(lh/save-preview data) 
+;; => "file:///dev/shm/link-hoarder-{guid}.html"
+
+;; Rendered Feed Preview (Mobile-friendly, feed-style view)
+(lh/save-preview-rendered data)
+;; => "file:///dev/shm/link-hoarder-rendered-{guid}.html"
+
+;; Markdown Preview (Episode Links style with blockquotes)
+(lh/save-markdown data)
+;; => "file:///dev/shm/episode-links-{guid}.md"
 ```
 
-### 3. Fetch and prep data (in link-hoarder namespace)
-
+### 3. Publishing to Fireside
 ```clojure
-(in-ns 'noblepayne.link-hoarder)
+;; Ensure login (creates client and authenticates)
+(def client (fs/ensure-login))
 
-;; Fetch from docs.lol
-(def data (-main "https://h.docs.lol/URL?both"))
+;; Set Metadata (handles tag un-reversal for Fireside)
+(fs/set-metadata client data)
 
-;; Associate podcast slug and guid
-;; For linuxunplugged (uses guid from markdown):
-(def data (assoc data :podcast "linuxunplugged"))
-
-;; For adfree (uses specific guid):
-(def data (assoc data :podcast "adfree" :guid "GUID-HERE"))
-
-;; Optionally save to file
-(spit "/tmp/data" data)
+;; Full Purge and Re-add Links
+(do
+  (fs/purge-links {:client client :podcast (:podcast data) :episode-guid (:guid data)})
+  (doseq [l (:links data)]
+    (fs/add-link {:client client :podcast (:podcast data) :episode-guid (:guid data)
+                  :title (:title l) :url (:href l) :quote (:quote l)})))
 ```
 
-### 4. Push to Fireside (switch back to user namespace)
+## Step-by-Step Production Workflow
 
+### 1. Load & Fetch
 ```clojure
-(in-ns 'user)
-
-;; Set show metadata (title, description, tags)
-(noblepayne.fireside/set-show-meta
-  {:client c
-   :podcast (:podcast noblepayne.link-hoarder/data)
-   :episode-guid (:guid noblepayne.link-hoarder/data)
-   :title (:title noblepayne.link-hoarder/data)
-   :description (:description noblepayne.link-hoarder/data)
-   :tags (:tags noblepayne.link-hoarder/data)})
-
-;; For UPDATES: purge old links first, then add new ones
-(noblepayne.fireside/purge-links
-  {:client c
-   :podcast (:podcast noblepayne.link-hoarder/data)
-   :episode-guid (:guid noblepayne.link-hoarder/data)})
-
-;; Add all links
-(doseq [{:keys [title href quote]} (:links noblepayne.link-hoarder/data)]
-  (noblepayne.fireside/add-link
-    {:client c
-     :podcast (:podcast noblepayne.link-hoarder/data)
-     :episode-guid (:guid noblepayne.link-hoarder/data)
-     :title title
-     :url href
-     :quote quote}))
+(def url "https://h.docs.lol/...")
+(def data (fs/prepare-data url "linuxunplugged"))
 ```
 
-## Automation Ideas
-
-### 1. Single function for full workflow
-
+### 2. Verify
+Open the HTML preview to check tags, links, and formatting.
 ```clojure
-(defn publish-episode [url podcast & [guid]]
-  (let [data (-> url
-                 link-hoarder/-main
-                 (assoc :podcast podcast)
-                 (assoc :guid (or guid (:guid data))))]
-    (fireside/set-show-meta {:client c
-                            :podcast (:podcast data)
-                            :episode-guid (:guid data)
-                            :title (:title data)
-                            :description (:description data)
-                            :tags (:tags data)})
-    (fireside/purge-links {:client c
-                          :podcast (:podcast data)
-                          :episode-guid (:guid data)})
-    (doseq [{:keys [title href quote]} (:links data)]
-      (fireside/add-link {:client c
-                         :podcast (:podcast data)
-                         :episode-guid (:guid data)
-                         :title title
-                         :url href
-                         :quote quote}))
-    ;; Guests available in (:guests data)
-    ;; Structure: [{:name "..." :href "..." :role "guest" :bio "..."}]
-    ;; Push to feed-fusion for RSS generation with podcast:person tags
-    data))
+(lh/save-preview data)
 ```
 
-### 2. Batch mode
-
-Process multiple shows at once:
-
+### 3. Publish Linux Unplugged
 ```clojure
-(def shows
-  [{:url "https://h.docs.lol/URL1?both" :podcast "linuxunplugged"}
-   {:url "https://h.docs.lol/URL2?both" :podcast "adfree" :guid "GUID"}])
-
-(doseq [show shows]
-  (publish-episode (:url show) (:podcast show) (:guid show)))
+(def c (fs/ensure-login))
+(fs/publish-episode url "linuxunplugged")
 ```
 
-### 3. Dry-run mode
-
-Preview what would be pushed without making API calls:
-
+### 4. Publish Ad-Free
 ```clojure
-(defn dry-run [url podcast]
-  (let [data (-> url link-hoarder/-main (assoc :podcast podcast))]
-    {:title (:title data)
-     :description (:description data)
-     :tags (:tags data)
-     :link-count (count (:links data))
-     :links (mapv :href (:links data))
-     :guests (mapv :name (:guests data))}))
-
-(dry-run "https://h.docs.lol/URL?both" "linuxunplugged")
+(def adfree-guid "2eecbf63-3b5c-4a91-9a62-ff23c8687019")
+(fs/publish-episode url "adfree" adfree-guid)
 ```
 
-### 4. Auto-detect guid
+## Tag Handling Logic
+- **Storage/Markdown:** Tags are kept in the order they appear.
+- **`extract-metadata`:** Automatically **reverses** tags so that the most specific/recent ones appear first in some views.
+- **`set-show-meta`:** Automatically **un-reverses** tags back to original order before pushing to Fireside API, ensuring the web interface remains consistent.
 
-Use guid from markdown for linuxunplugged, override for adfree:
+## Troubleshooting
 
-```clojure
-(defn determine-guid [podcast data existing-guid]
-  (case podcast
-    "linuxunplugged" (:guid data)
-    "adfree" (or existing-guid (:guid data))))
-```
+### Timeouts
+The full `publish-episode` task involves 40-60+ HTTP requests. In high-latency environments or via some orchestrators (like MCP), it may timeout.
+**Solution:** Run the steps manually (Metadata, then Purge, then Add Links) to ensure completion.
 
-### 5. Persist login state
-
-Save the authenticated client to a file or atom for reuse across REPL restarts.
-
-### 6. Chapter loading integration
-
-Incorporate the chapter file loading from fireside.clj to add chapters automatically:
-
-```clojure
-(defn load-chapters-from-file [filepath]
-  (doseq [{:strs [startTime title]} (fireside/load-chapters filepath)]
-    (fireside/add-chapter {:client c
-                          :podcast (:podcast data)
-                          :episode-guid (:guid data)
-                          :timecode startTime
-                          :note title})))
-```
-
-### 7. Guest handling
-
-Guests are extracted from markdown and available in the data map. The bio field is first-class data that can be used by feed-fusion for RSS generation:
-
-```clojure
-;; Guests from markdown
-(:guests data)
-;; => [{:name "John Smith"
-;;      :href "https://example.com/john"
-;;      :role "guest"
-;;      :bio "John is a software engineer from Boston"}
-;;     {:name "Jane Doe"
-;;      :href "https://example.com/jane"
-;;      :role "guest"
-;;      :bio "Jane is a DevOps engineer"}]
-
-;; Pass to feed-fusion for podcast:person tags in RSS
-(feed-fusion/make-item* {:title (:title data)
-                         :guid (:guid data)
-                         :guests (:guests data)
-                         ;; ...other fields
-                         })
-```
+### Missing Metadata
+If metadata isn't appearing, check `FIRESIDE_BASE_URL`. Ensure it includes the protocol (e.g., `https://app.fireside.fm`).
