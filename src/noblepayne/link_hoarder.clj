@@ -5,6 +5,7 @@
             [clojure.zip :as zip]
             [cybermonday.core :as markdown]
             [hato.client :as http]
+            [hickory.render :as hr]
             [hickory.select :as hs]
             [hickory.zip :as hz]
             [clojure.string :as str]))
@@ -98,13 +99,14 @@
 
 (defn extract-links [md-zip]
   (dedup-links
-   (vec
-    (for [loc (find-links md-zip)
-          :let [link-data (extract-link-data (zip/node loc))]
-          :when (not (str/starts-with? (:title link-data) "READ:"))]
-      (assoc link-data
-             :quote
-             (get-related-blockquote loc))))))
+   (into []
+         (comp
+          (map (fn [loc]
+                 (let [link-data (extract-link-data (zip/node loc))]
+                   (when-not (str/starts-with? (:title link-data) "READ:")
+                     (assoc link-data :quote (get-related-blockquote loc))))))
+          (filter some?))
+         (find-links md-zip))))
 
 (defn extract-guest-data [link-node]
   {:name (inner-content link-node)
@@ -133,13 +135,14 @@
                   (find-guests (zip/next next-link))))))))
 
 (defn extract-guests [md-zip]
-  (vec
-   (for [loc (find-guests md-zip)
-         :let [guest-data (extract-guest-data (zip/node loc))]
-         :when (seq (:name guest-data))]
-     (assoc guest-data
-            :bio
-            (get-related-blockquote loc)))))
+  (into []
+        (comp
+         (map (fn [loc]
+                (let [guest-data (extract-guest-data (zip/node loc))]
+                  (when (seq (:name guest-data))
+                    (assoc guest-data :bio (get-related-blockquote loc))))))
+         (filter some?))
+        (find-guests md-zip)))
 
 (defn- extract-single-meta [md-zip id]
   (let [id-name (name id)]
@@ -207,37 +210,37 @@
        fetch-markdown
        extract-links))
 
-(defn- escape-html [s]
-  (if (nil? s)
-    ""
-    (str/replace (str s) #"[&<>\"']"
-                 {"&" "&amp;"
-                  "<" "&lt;"
-                  ">" "&gt;"
-                  "\"" "&quot;"
-                  "'" "&#39;"})))
-
 (declare preview-markdown)
 
+(defn- strip-nils
+  "Remove nil values and flatten seqs from hiccup form for hickory rendering."
+  [form]
+  (cond
+    (nil? form) nil
+    (string? form) form
+    (number? form) form
+    (keyword? form) form
+    (vector? form) (let [tag (first form)
+                         maybe-attrs (second form)
+                         attrs? (map? maybe-attrs)
+                         content (if attrs? (drop 2 form) (drop 1 form))
+                         cleaned (vec
+                                  (mapcat
+                                   (fn [child]
+                                     (cond
+                                       (nil? child) nil
+                                       (vector? child) [(strip-nils child)]
+                                       (seq? child) (keep strip-nils child)
+                                       :else [child]))
+                                   content))]
+                     (if attrs?
+                       (into [tag maybe-attrs] cleaned)
+                       (into [tag] cleaned)))
+    (seq? form) (vec (keep strip-nils form))
+    :else form))
+
 (defn- render-hiccup [form]
-  (let [void-elements #{"area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "param" "source" "track" "wbr"}]
-    (cond
-      (string? form) (escape-html form)
-      (number? form) (str form)
-      (vector? form) (let [tag (first form)
-                           tag-name (name tag)
-                           maybe-attrs (second form)
-                           attrs? (map? maybe-attrs)
-                           attrs (if attrs? maybe-attrs {})
-                           content (if attrs? (drop 2 form) (drop 1 form))
-                           attr-str (str/join " " (for [[k v] attrs] (str (name k) "=\"" (escape-html v) "\"")))]
-                       (if (void-elements (str/lower-case tag-name))
-                         (str "<" tag-name (when (seq attr-str) (str " " attr-str)) ">")
-                         (str "<" tag-name (when (seq attr-str) (str " " attr-str)) ">"
-                              (str/join "" (map render-hiccup content))
-                              "</" tag-name ">")))
-      (sequential? form) (str/join "" (map render-hiccup form))
-      :else (escape-html (str form)))))
+  (hr/hiccup-to-html [(strip-nils form)]))
 
 (defn- preview-full [data]
   (let [guest-count (count (:guests data))
