@@ -1,6 +1,7 @@
 (ns noblepayne.link-hoarder-test
   (:require [clojure.test :refer [deftest is testing]]
-            [noblepayne.link-hoarder :refer [dedup-links]]))
+            [noblepayne.link-hoarder :refer [dedup-links
+                                             preview-markdown]]))
 
 (deftest dedup-links-test
   (testing "preserves order, first occurrence wins"
@@ -36,3 +37,90 @@
     (is (= [{:href nil :title "only"}]
            (dedup-links [{:href nil :title "only"}
                          {:href nil :title "also"}])))))
+
+;; ---------------------------------------------------------------------------
+;; strip-nils tests — the nil-filtering for hiccup before hickory rendering
+;; ---------------------------------------------------------------------------
+
+(def ^:private strip-nils
+  (resolve 'noblepayne.link-hoarder/strip-nils))
+
+(deftest strip-nils-test
+  (testing "passes through strings and numbers"
+    (is (= "hello" (strip-nils "hello")))
+    (is (= 42 (strip-nils 42))))
+
+  (testing "nil becomes nil (filtered by caller)"
+    (is (nil? (strip-nils nil))))
+
+  (testing "strips nil children from vector"
+    (is (= [:div [:p "a"] [:p "b"]]
+           (strip-nils [:div [:p "a"] nil [:p "b"]]))))
+
+  (testing "flattens seq children into parent vector"
+    (is (= [:ul [:li "a"] [:li "b"]]
+           (strip-nils [:ul (for [x ["a" "b"]] [:li x])]))))
+
+  (testing "handles when expression returning nil"
+    (is (= [:div [:p "visible"]]
+           (strip-nils [:div (when true [:p "visible"]) (when false [:p "hidden"])]))))
+
+  (testing "handles mixed when expressions"
+    (is (= [:div [:p "a"]]
+           (strip-nils [:div (when true [:p "a"]) (when false [:p "b"])]))))
+
+  (testing "preserves attributes"
+    (is (= [:p {:class "foo"} "text"]
+           (strip-nils [:p {:class "foo"} "text"]))))
+
+  (testing "nested nils are stripped recursively"
+    (is (= [:div [:ul [:li "x"]]]
+           (strip-nils [:div [:ul [:li "x"] nil]])))))
+
+;; ---------------------------------------------------------------------------
+;; render-hiccup integration — verify hickory output matches expected HTML
+;; ---------------------------------------------------------------------------
+
+(def ^:private render-hiccup
+  (resolve 'noblepayne.link-hoarder/render-hiccup))
+
+(deftest render-hiccup-test
+  (testing "renders basic hiccup to HTML"
+    (is (= "<p>hello</p>"
+           (render-hiccup [:p "hello"]))))
+
+  (testing "renders attributes"
+    (is (= "<a href=\"https://example.com\">link</a>"
+           (render-hiccup [:a {:href "https://example.com"} "link"]))))
+
+  (testing "renders void elements"
+    (is (= "<br>"
+           (render-hiccup [:br]))))
+
+  (testing "renders nested structure"
+    (is (= "<article><h1>title</h1><p>body</p></article>"
+           (render-hiccup [:article [:h1 "title"] [:p "body"]]))))
+
+  (testing "nil children are stripped"
+    (is (= "<div><p>a</p><p>c</p></div>"
+           (render-hiccup [:div [:p "a"] nil [:p "c"]]))))
+
+  (testing "seq children from for are flattened"
+    (is (= "<ul><li>a</li><li>b</li></ul>"
+           (render-hiccup [:ul (for [x ["a" "b"]] [:li x])])))))
+
+;; ---------------------------------------------------------------------------
+;; preview-markdown regression
+;; ---------------------------------------------------------------------------
+
+(deftest preview-markdown-test
+  (testing "episode format with header"
+    (is (= "##### Episode Links\n* [Example](https://example.com)\n  > A quote\n* [No Quote](https://other.com)\n"
+           (preview-markdown {:links [{:href "https://example.com" :title "Example" :quote "A quote"}
+                                      {:href "https://other.com" :title "No Quote" :quote nil}]}
+                             :episode))))
+
+  (testing "plain format without header"
+    (is (= "* [Example](https://example.com)\n"
+           (preview-markdown {:links [{:href "https://example.com" :title "Example" :quote nil}]}
+                             :plain)))))
