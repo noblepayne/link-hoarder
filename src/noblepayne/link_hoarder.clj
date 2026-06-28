@@ -83,14 +83,28 @@
                   next-link
                   (find-links (zip/next next-link))))))))
 
+(defn dedup-links
+  "Remove duplicate links by :href, preserving document order.
+   First occurrence wins."
+  [links]
+  (let [seen (volatile! #{})]
+    (vec
+     (filter (fn [link]
+               (let [href (:href link)]
+                 (if (contains? @seen href)
+                   false
+                   (do (vswap! seen conj href) true))))
+             links))))
+
 (defn extract-links [md-zip]
-  (vec
-   (for [loc (find-links md-zip)
-         :let [link-data (extract-link-data (zip/node loc))]
-         :when (not (str/starts-with? (:title link-data) "READ:"))]
-     (assoc (extract-link-data (zip/node loc))
-            :quote
-            (get-related-blockquote loc)))))
+  (dedup-links
+   (vec
+    (for [loc (find-links md-zip)
+          :let [link-data (extract-link-data (zip/node loc))]
+          :when (not (str/starts-with? (:title link-data) "READ:"))]
+      (assoc link-data
+             :quote
+             (get-related-blockquote loc))))))
 
 (defn extract-guest-data [link-node]
   {:name (inner-content link-node)
@@ -447,7 +461,7 @@
   ;; TODO empty ### breaks
   (def data
     (-main
-     ""))
+     "https://h.docs.lol/sBze5A_5TQ2tDj63olBpGg?both"))
 
   data
   ;; ads
@@ -455,7 +469,7 @@
   (def data (assoc data :guid ""))
   ;; adfree
   (def data (assoc data :podcast "adfree"))
-  (def data (assoc data :guid ""))
+  (def data (assoc data :guid "00e7dd9b-af12-4032-ad20-1b1983e5457f"))
 
   (save-preview data)
   (save-markdown data)
