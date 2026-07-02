@@ -162,12 +162,6 @@
     (catch Exception e (def error e) (throw e)))
 
   (try
-    (purge-links {:client c
-                  :podcast (:podcast noblepayne.link-hoarder/data)
-                  :episode-guid (:guid noblepayne.link-hoarder/data)})
-    (catch Exception e (def error e) (throw e)))
-
-  (try
     (add-chapter {:client c
                   :podcast "linuxunplugged"
                   :episode-guid "b7a2d096-0fe0-48e9-8ed3-2cf129d1be4a"
@@ -176,7 +170,7 @@
     (catch Exception e (def error e) (throw e)))
 
   (doseq [{:strs [startTime title] :as chapter}
-          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 671 Ads.txt")]
+          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 673 Ads.txt")]
     (println title)
     (add-chapter {:client c
                   :podcast (:podcast noblepayne.link-hoarder/data)
@@ -377,6 +371,12 @@
     :title "test title"
     :url "http://test.url"
     :quote "test quote"})
+
+  (try
+    (purge-links {:client c
+                  :podcast (:podcast noblepayne.link-hoarder/data)
+                  :episode-guid (:guid noblepayne.link-hoarder/data)})
+    (catch Exception e (def error e) (throw e)))
 
   (doseq [{:keys [:title :href :quote] :as link} (noblepayne.link-hoarder/data :links)]
     (println href)
