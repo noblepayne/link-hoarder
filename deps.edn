@@ -1,8 +1,12 @@
 {:paths ["src"]
- :deps  {org.clojure/clojure {:mvn/version "1.11.2"}
-         com.kiranshila/cybermonday {:mvn/version "0.6.215"}
-         hato/hato {:mvn/version "0.9.0"}
-         org.clj-commons/hickory {:mvn/version "0.7.3"}}
+ :deps {org.clojure/clojure {:mvn/version "1.11.2"}
+        com.kiranshila/cybermonday {:mvn/version "0.6.215"}
+        hato/hato {:mvn/version "0.9.0"}
+        org.clj-commons/hickory {:mvn/version "0.7.3"}}
  :aliases
- {:test {:extra-paths ["test"]}
-  :neil {:project {:name com.noblepayne/link-hoarder}}}}
+ {:test {:extra-paths ["test"]
+         :exec-fn noblepayne.test-runner/run-tests}
+  :run {:main-opts ["-m" "noblepayne.link-hoarder"]}
+  :repl {:extra-deps {nrepl/nrepl {:mvn/version "1.1.1"}
+                      cider/cider-nrepl {:mvn/version "0.45.1"}}
+         :exec-fn nrepl.cmdline/main}}}
