@@ -153,18 +153,31 @@
     (into [] chapter-xf chapter-lines)))
 
 (comment
-  ;; Example: delete a link
-  ;; (delete-link {:client c
-  ;;               :podcast "linuxunplugged"
-  ;;               :episode-guid "869b643f-..."
-  ;;               :link-guid "19b95853-..."})
-  ;; Example: add a chapter
-  ;; (add-chapter {:client c
-  ;;               :podcast "linuxunplugged"
-  ;;               :episode-guid "b7a2d096-..."
-  ;;               :timecode "0"
-  ;;               :note "test chapter"})
-  )
+
+  (try
+
+    (delete-link {:client c
+                  :podcast "linuxunplugged"
+                  :episode-guid "869b643f-3e5b-4020-aec1-0ec3f2f26287"
+                  :link-guid "19b95853-18b8-4713-a3fe-aaa75e4f3430"})
+    (catch Exception e (def error e) (throw e)))
+
+  (try
+    (add-chapter {:client c
+                  :podcast "linuxunplugged"
+                  :episode-guid "b7a2d096-0fe0-48e9-8ed3-2cf129d1be4a"
+                  :timecode "0"
+                  :note "test"})
+    (catch Exception e (def error e) (throw e)))
+
+  (doseq [{:strs [startTime title] :as chapter}
+          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 673 Ads.txt")]
+    (println title)
+    (add-chapter {:client c
+                  :podcast (:podcast noblepayne.link-hoarder/data)
+                  :episode-guid (:guid noblepayne.link-hoarder/data)
+                  :timecode startTime
+                  :note title})))
 
 (defn prepare-data
   "Fetch markdown from url and prepare data with podcast association.
@@ -436,22 +449,58 @@
       results)))
 
 (comment
-  ;; Usage examples:
-  ;;
-  ;; (def c (http-client))
-  ;; (login-to-fireside c)
-  ;;
-  ;; Export sponsorships for last 90 episodes:
-  ;; (export-sponsorships c "linuxunplugged" :episode-count 90)
-  ;;
-  ;; Add a link to an episode:
-  ;; (add-link {:client c
-  ;;            :podcast "linuxunplugged"
-  ;;            :episode-guid "89cf45f9-..."
-  ;;            :title "My Link"
-  ;;            :url "https://example.com"
-  ;;            :quote "A short description"})
-  ;;
-  ;; Purge and re-add links from markdown:
-  ;; (purge-links {:client c :podcast "linuxunplugged" :episode-guid (:guid data)})
-  )
+  (def c (http-client))
+  (login-to-fireside c)
+
+  (clojure.pprint/print-table
+   (sort-by :name
+            (filter :exception-types (:members (clojure.reflect/reflect cookie)))))
+
+  (->> "https://app.fireside.fm/podcasts/linuxunplugged/episodes/bc95a92e-c86f-4577-90a7-7f6bf3f3f6db/edit"
+       (#(http/get % {:http-client c}))
+       :body
+       hickory/parse
+       hickory/as-hickory
+       (hs/select (hs/tag :form))
+       (#(nth % 0))
+       form->map
+       clojure.pprint/pprint)
+
+  (set-metedata
+   {:client c
+    :podcast "linuxunplugged"
+    :episode-guid "bc95a92e-c86f-4577-90a7-7f6bf3f3f6db"
+    :metadata {"episode[title]" "TEST TITLE 11111Z"}})
+
+  (add-link
+   {:client c
+    :podcast "linuxunplugged"
+    :episode-guid "89cf45f9-394a-482e-8ef9-f2b530188274"
+    :title "test title"
+    :url "http://test.url"
+    :quote "test quote"})
+
+  (try
+    (purge-links {:client c
+                  :podcast (:podcast noblepayne.link-hoarder/data)
+                  :episode-guid (:guid noblepayne.link-hoarder/data)})
+    (catch Exception e (def error e) (throw e)))
+
+  (doseq [{:keys [:title :href :quote] :as link} (noblepayne.link-hoarder/data :links)]
+    (println href)
+    (add-link {:client c
+               :podcast (:podcast noblepayne.link-hoarder/data)
+               :episode-guid (:guid noblepayne.link-hoarder/data)
+               :title title
+               :url href
+               :quote quote}))
+
+  (try
+    (set-show-meta {:client c
+                    :podcast (:podcast noblepayne.link-hoarder/data)
+                    :episode-guid (:guid noblepayne.link-hoarder/data)
+                    :title (:title noblepayne.link-hoarder/data)
+                    :description (:description noblepayne.link-hoarder/data)
+                    :tags (:tags noblepayne.link-hoarder/data)})
+    true
+    (catch Exception e (def error e) (throw e))))
