@@ -267,7 +267,7 @@
                      (for [g (:guests data)]
                        [:tr
                         [:td (:name g)]
-                        [:td (if (:href g) [:a {:href (:href g)} (:href g)] "-")]
+                        [:td (if (:href g) [:a {:href (:href g) :target "_blank" :rel "noopener noreferrer"} (:href g)] "-")]
                         [:td (or (:bio g) "-")]])]]])
                 [:section {:class "links-section"}
                  [:h2 (str "Links (" link-count ")")]
@@ -277,7 +277,7 @@
                    (for [l (:links data)]
                      [:tr
                       [:td (:title l)]
-                      [:td [:a {:href (:href l)} (:href l)]]
+                      [:td [:a {:href (:href l) :target "_blank" :rel "noopener noreferrer"} (:href l)]]
                       [:td (or (:quote l) "-")]])]]]
                 [:section {:class "markdown-section"}
                  [:h2 "Markdown"]
@@ -340,7 +340,7 @@
                 [:ul {:style "padding-left: 0;"}
                  (for [l (:links data)]
                    [:li {:style "list-style: none; margin-bottom: 1rem;"}
-                    [:a {:href (:href l)} (:title l)]
+                    [:a {:href (:href l) :target "_blank" :rel "noopener noreferrer"} (:title l)]
                     (when (seq (:quote l))
                       [:blockquote {:style "margin-top: 0.5rem;"} (:quote l)])])]]]
     (str "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Links</title>"
@@ -416,14 +416,14 @@
                       [:div {:class "guest-card"}
                        [:img {:src (or (:img g) "https://www.jupiterbroadcasting.com/images/people/guest.jpg")
                               :alt (:name g)}]
-                       [:a {:href (:href g)} (:name g)]])]])
+                       [:a {:href (:href g) :target "_blank" :rel "noopener noreferrer"} (:name g)]])]])
                 [:section {:class "links-section"}
                  [:h2 (str "Links (" (count links) ")")]
                  [:ul {:style "padding-left: 0;"}
                   (for [l links]
                     [:li {:class "link-item", :style "list-style: none; margin-bottom: 1.25rem;"}
                      [:div {:class "link-title"}
-                      [:a {:href (:href l) :title (:title l) :rel "nofollow" :style "text-decoration: none; font-weight: bold;"} (:title l)]
+                      [:a {:href (:href l) :title (:title l) :target "_blank" :rel "nofollow noopener noreferrer" :style "text-decoration: none; font-weight: bold;"} (:title l)]
                       (when (:quote l) [:span {:class "link-sep"} " — "])]
                      (when (:quote l)
                        [:div {:class "link-quote"} (:quote l)])])]]]]
