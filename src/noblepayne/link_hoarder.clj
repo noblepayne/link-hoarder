@@ -464,7 +464,7 @@
   ;; TODO empty ### breaks
   (def data
     (-main
-     "https://h.docs.lol/4DCiE0FdR5ihYEufmVGhog"))
+     "https://h.docs.lol/URL?both"))
 
   data
   ;; ads
@@ -472,7 +472,7 @@
   (def data (assoc data :guid ""))
   ;; adfree
   (def data (assoc data :podcast "adfree"))
-  (def data (assoc data :guid "e544b875-54ab-46b6-9693-0131f50cfb48"))
+  (def data (assoc data :guid "YOUR-EPISODE-GUID"))
 
   (save-preview data)
   (save-markdown data)

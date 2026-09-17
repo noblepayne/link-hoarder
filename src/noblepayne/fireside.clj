@@ -171,7 +171,7 @@
     (catch Exception e (def error e) (throw e)))
 
   (doseq [{:strs [startTime title] :as chapter}
-          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 673 Ads.txt")]
+          (load-chapters "/path/to/episode-chapters.txt")]
     (println title)
     (add-chapter {:client c
                   :podcast (:podcast noblepayne.link-hoarder/data)

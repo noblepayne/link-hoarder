@@ -375,7 +375,7 @@ Source files contain `(comment ...)` blocks at the bottom. These are evaluated w
 ;; From link_hoarder.clj comment block:
 (def data
   (-main
-   "https://h.docs.lol/6qhYpqFBQiOc5vdJE70wjg?both#"))
+   "https://h.docs.lol/URL?both"))
 
 ;; After evaluation, available as:
 noblepayne.link-hoarder/data
