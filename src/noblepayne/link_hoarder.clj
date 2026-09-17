@@ -5,6 +5,7 @@
             [clojure.zip :as zip]
             [cybermonday.core :as markdown]
             [hato.client :as http]
+            [hickory.render :as hr]
             [hickory.select :as hs]
             [hickory.zip :as hz]
             [clojure.string :as str]))
@@ -83,14 +84,29 @@
                   next-link
                   (find-links (zip/next next-link))))))))
 
+(defn dedup-links
+  "Remove duplicate links by :href, preserving document order.
+   First occurrence wins."
+  [links]
+  (let [seen (volatile! #{})]
+    (vec
+     (filter (fn [link]
+               (let [href (:href link)]
+                 (if (contains? @seen href)
+                   false
+                   (do (vswap! seen conj href) true))))
+             links))))
+
 (defn extract-links [md-zip]
-  (vec
-   (for [loc (find-links md-zip)
-         :let [link-data (extract-link-data (zip/node loc))]
-         :when (not (str/starts-with? (:title link-data) "READ:"))]
-     (assoc (extract-link-data (zip/node loc))
-            :quote
-            (get-related-blockquote loc)))))
+  (dedup-links
+   (into []
+         (comp
+          (map (fn [loc]
+                 (let [link-data (extract-link-data (zip/node loc))]
+                   (when-not (str/starts-with? (:title link-data) "READ:")
+                     (assoc link-data :quote (get-related-blockquote loc))))))
+          (filter some?))
+         (find-links md-zip))))
 
 (defn extract-guest-data [link-node]
   {:name (inner-content link-node)
@@ -119,13 +135,14 @@
                   (find-guests (zip/next next-link))))))))
 
 (defn extract-guests [md-zip]
-  (vec
-   (for [loc (find-guests md-zip)
-         :let [guest-data (extract-guest-data (zip/node loc))]
-         :when (seq (:name guest-data))]
-     (assoc guest-data
-            :bio
-            (get-related-blockquote loc)))))
+  (into []
+        (comp
+         (map (fn [loc]
+                (let [guest-data (extract-guest-data (zip/node loc))]
+                  (when (seq (:name guest-data))
+                    (assoc guest-data :bio (get-related-blockquote loc))))))
+         (filter some?))
+        (find-guests md-zip)))
 
 (defn- extract-single-meta [md-zip id]
   (let [id-name (name id)]
@@ -193,37 +210,37 @@
        fetch-markdown
        extract-links))
 
-(defn- escape-html [s]
-  (if (nil? s)
-    ""
-    (str/replace (str s) #"[&<>\"']"
-                 {"&" "&amp;"
-                  "<" "&lt;"
-                  ">" "&gt;"
-                  "\"" "&quot;"
-                  "'" "&#39;"})))
-
 (declare preview-markdown)
 
+(defn- strip-nils
+  "Remove nil values and flatten seqs from hiccup form for hickory rendering."
+  [form]
+  (cond
+    (nil? form) nil
+    (string? form) form
+    (number? form) form
+    (keyword? form) form
+    (vector? form) (let [tag (first form)
+                         maybe-attrs (second form)
+                         attrs? (map? maybe-attrs)
+                         content (if attrs? (drop 2 form) (drop 1 form))
+                         cleaned (vec
+                                  (mapcat
+                                   (fn [child]
+                                     (cond
+                                       (nil? child) nil
+                                       (vector? child) [(strip-nils child)]
+                                       (seq? child) (keep strip-nils child)
+                                       :else [child]))
+                                   content))]
+                     (if attrs?
+                       (into [tag maybe-attrs] cleaned)
+                       (into [tag] cleaned)))
+    (seq? form) (vec (keep strip-nils form))
+    :else form))
+
 (defn- render-hiccup [form]
-  (let [void-elements #{"area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "param" "source" "track" "wbr"}]
-    (cond
-      (string? form) (escape-html form)
-      (number? form) (str form)
-      (vector? form) (let [tag (first form)
-                           tag-name (name tag)
-                           maybe-attrs (second form)
-                           attrs? (map? maybe-attrs)
-                           attrs (if attrs? maybe-attrs {})
-                           content (if attrs? (drop 2 form) (drop 1 form))
-                           attr-str (str/join " " (for [[k v] attrs] (str (name k) "=\"" (escape-html v) "\"")))]
-                       (if (void-elements (str/lower-case tag-name))
-                         (str "<" tag-name (when (seq attr-str) (str " " attr-str)) ">")
-                         (str "<" tag-name (when (seq attr-str) (str " " attr-str)) ">"
-                              (str/join "" (map render-hiccup content))
-                              "</" tag-name ">")))
-      (sequential? form) (str/join "" (map render-hiccup form))
-      :else (escape-html (str form)))))
+  (hr/hiccup-to-html [(strip-nils form)]))
 
 (defn- preview-full [data]
   (let [guest-count (count (:guests data))
@@ -250,7 +267,7 @@
                      (for [g (:guests data)]
                        [:tr
                         [:td (:name g)]
-                        [:td (if (:href g) [:a {:href (:href g)} (:href g)] "-")]
+                        [:td (if (:href g) [:a {:href (:href g) :target "_blank" :rel "noopener noreferrer"} (:href g)] "-")]
                         [:td (or (:bio g) "-")]])]]])
                 [:section {:class "links-section"}
                  [:h2 (str "Links (" link-count ")")]
@@ -260,7 +277,7 @@
                    (for [l (:links data)]
                      [:tr
                       [:td (:title l)]
-                      [:td [:a {:href (:href l)} (:href l)]]
+                      [:td [:a {:href (:href l) :target "_blank" :rel "noopener noreferrer"} (:href l)]]
                       [:td (or (:quote l) "-")]])]]]
                 [:section {:class "markdown-section"}
                  [:h2 "Markdown"]
@@ -323,7 +340,7 @@
                 [:ul {:style "padding-left: 0;"}
                  (for [l (:links data)]
                    [:li {:style "list-style: none; margin-bottom: 1rem;"}
-                    [:a {:href (:href l)} (:title l)]
+                    [:a {:href (:href l) :target "_blank" :rel "noopener noreferrer"} (:title l)]
                     (when (seq (:quote l))
                       [:blockquote {:style "margin-top: 0.5rem;"} (:quote l)])])]]]
     (str "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Links</title>"
@@ -399,14 +416,14 @@
                       [:div {:class "guest-card"}
                        [:img {:src (or (:img g) "https://www.jupiterbroadcasting.com/images/people/guest.jpg")
                               :alt (:name g)}]
-                       [:a {:href (:href g)} (:name g)]])]])
+                       [:a {:href (:href g) :target "_blank" :rel "noopener noreferrer"} (:name g)]])]])
                 [:section {:class "links-section"}
                  [:h2 (str "Links (" (count links) ")")]
                  [:ul {:style "padding-left: 0;"}
                   (for [l links]
                     [:li {:class "link-item", :style "list-style: none; margin-bottom: 1.25rem;"}
                      [:div {:class "link-title"}
-                      [:a {:href (:href l) :title (:title l) :rel "nofollow" :style "text-decoration: none; font-weight: bold;"} (:title l)]
+                      [:a {:href (:href l) :title (:title l) :target "_blank" :rel "nofollow noopener noreferrer" :style "text-decoration: none; font-weight: bold;"} (:title l)]
                       (when (:quote l) [:span {:class "link-sep"} " — "])]
                      (when (:quote l)
                        [:div {:class "link-quote"} (:quote l)])])]]]]
@@ -447,7 +464,7 @@
   ;; TODO empty ### breaks
   (def data
     (-main
-     ""))
+     "https://h.docs.lol/URL?both"))
 
   data
   ;; ads
@@ -455,7 +472,7 @@
   (def data (assoc data :guid ""))
   ;; adfree
   (def data (assoc data :podcast "adfree"))
-  (def data (assoc data :guid ""))
+  (def data (assoc data :guid "YOUR-EPISODE-GUID"))
 
   (save-preview data)
   (save-markdown data)

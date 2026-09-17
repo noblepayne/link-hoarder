@@ -3,7 +3,8 @@
   (:require [clojure.string :as str]
             [hato.client :as http]
             [hickory.core :as hickory]
-            [hickory.select :as hs]))
+            [hickory.select :as hs]
+            [noblepayne.link-hoarder :as lh]))
 
 ;; Setup
 (set! *warn-on-reflection* true)
@@ -162,12 +163,6 @@
     (catch Exception e (def error e) (throw e)))
 
   (try
-    (purge-links {:client c
-                  :podcast (:podcast noblepayne.link-hoarder/data)
-                  :episode-guid (:guid noblepayne.link-hoarder/data)})
-    (catch Exception e (def error e) (throw e)))
-
-  (try
     (add-chapter {:client c
                   :podcast "linuxunplugged"
                   :episode-guid "b7a2d096-0fe0-48e9-8ed3-2cf129d1be4a"
@@ -176,7 +171,7 @@
     (catch Exception e (def error e) (throw e)))
 
   (doseq [{:strs [startTime title] :as chapter}
-          (load-chapters "/home/wes/Downloads/workdir/Linux Unplugged 671 Ads.txt")]
+          (load-chapters "/path/to/episode-chapters.txt")]
     (println title)
     (add-chapter {:client c
                   :podcast (:podcast noblepayne.link-hoarder/data)
@@ -188,7 +183,7 @@
   "Fetch markdown from url and prepare data with podcast association.
   Returns data map with :podcast set."
   [url podcast]
-  (-> (noblepayne.link-hoarder/-main url)
+  (-> (lh/-main url)
       (assoc :podcast podcast)))
 
 (defn- unreverse-tags
@@ -237,7 +232,7 @@
   ([url podcast guid-override]
    (let [_ (println "Fetching markdown data from" url)
          data (-> url
-                  noblepayne.link-hoarder/-main
+                  lh/-main
                   (assoc :podcast podcast)
                   (update :guid #(or guid-override %)))
          guid (:guid data)
@@ -346,6 +341,113 @@
                               "episode[keywords]" tags-normalized
                               "episode[tag_list]" tags-normalized}})))
 
+(defn decode-html-entities
+  "Decode common HTML entities in a string."
+  [s]
+  (-> s
+      (str/replace "&amp;" "&")
+      (str/replace "&lt;" "<")
+      (str/replace "&gt;" ">")
+      (str/replace "&quot;" "\"")
+      (str/replace "&#39;" "'")))
+
+(defn parse-timecode-to-seconds
+  "Convert timecode string like '51 seconds' or '2 minutes 30 seconds' to total seconds."
+  [timecode-str]
+  (let [parts (re-seq #"(\d+)\s+(second|minute|hour)s?" timecode-str)]
+    (reduce (fn [acc [_ num unit]]
+              (let [n (Integer/parseInt num)]
+                (case unit
+                  "second" (+ acc n)
+                  "minute" (+ acc (* n 60))
+                  "hour" (+ acc (* n 3600))
+                  acc)))
+            0 parts)))
+
+(defn extract-sponsorships
+  "Extract sponsorship data from a sponsorship page HTML."
+  [html]
+  (let [pattern #"(?s)<span class=\"accordion-heading__title\">(.*?)</span>.*?<span class=\"accordion-heading__metadata\"><i class=\"fas fa-clock\" aria-hidden=\"true\"></i>\s*(.*?)</span>.*?<span class=\"accordion-heading__subtitle\">(.*?)</span>"
+        matches (re-seq pattern html)]
+    (mapv (fn [[_ campaign timecode sponsor]]
+            {:campaign (decode-html-entities (str/trim campaign))
+             :timecode_str (str/trim timecode)
+             :timecode_seconds (parse-timecode-to-seconds (str/trim timecode))
+             :sponsor (decode-html-entities (str/trim sponsor))})
+          matches)))
+
+(defn fetch-sponsorships
+  "Fetch sponsorships for a single episode. Retries once on transient errors."
+  [client podcast episode-guid]
+  (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast "episodes" episode-guid "sponsorships"])]
+    (letfn [(fetch []
+              (try
+                (let [html (:body (http/request {:method :get :url url :http-client client}))]
+                  (extract-sponsorships html))
+                (catch Exception e
+                  (when (re-find #"502|503|504" (str (.getMessage e)))
+                    (println "  Retrying" (subs episode-guid 0 8) "...")
+                    (Thread/sleep 2000)
+                    (let [html (:body (http/request {:method :get :url url :http-client client}))]
+                      (extract-sponsorships html))))))]
+      (fetch))))
+
+(defn fetch-episode-ids
+  "Fetch episode GUIDs, numbers and titles from the episodes list page.
+   Stops early once we have enough episodes. Returns vector of
+   {:episode_num Int :title Str :guid Str}."
+  [client podcast & {:keys [needed] :or {needed 90}}]
+  (let [pages-needed (+ (quot needed 25) 1)]
+    (println "Fetching" needed "episodes (est." pages-needed "pages)...")
+    (loop [page-num 1
+           acc []]
+      (if (> page-num pages-needed)
+        acc
+        (let [url (if (= page-num 1)
+                    (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast "episodes"])
+                    (str (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast "episodes"]) "?page=" page-num))
+              html (:body (http/request {:method :get :url url :http-client client}))
+              page-eps (mapv (fn [[_ num guid title]]
+                               {:episode_num (Integer/parseInt num)
+                                :title (str/trim title)
+                                :guid guid})
+                             (re-seq #"(?s)<td class=\"data-table__cell\">(\d+)</td>.*?/episodes/([0-9a-f-]{36})>([^<]+)<" html))
+              combined (into acc page-eps)]
+          (println "  Page" page-num ": +" (count page-eps) "episodes")
+          (recur (inc page-num) combined))))))
+
+(defn export-sponsorships
+  "Export sponsorships for the most recent N episodes to an EDN file.
+   Each entry includes :episode_num, :title, and :guid.
+   Episodes without sponsorships are in :no_sponsors.
+   :request-delay controls ms between API calls (default 100)."
+  [client podcast & {:keys [episode-count output-file request-delay]
+                     :or {episode-count 90 output-file "sponsorships.edn" request-delay 100}}]
+  (println "Fetching episode list...")
+  (let [all-episodes (vec (fetch-episode-ids client podcast :needed episode-count))
+        recent-episodes (vec (take episode-count all-episodes))]
+    (println "Got" (count all-episodes) "total, processing first" (count recent-episodes))
+    (let [results (mapv (fn [{:keys [episode_num title guid]}]
+                          (Thread/sleep (int request-delay))
+                          (let [sponsorships (fetch-sponsorships client podcast guid)]
+                            {:episode_num episode_num
+                             :title title
+                             :episode_guid guid
+                             :sponsorships sponsorships}))
+                        recent-episodes)
+          with-sponsors (filterv #(seq (:sponsorships %)) results)
+          without-sponsors (remove #(seq (:sponsorships %)) results)]
+      (println "Episodes with sponsorships:" (count with-sponsors))
+      (println "Episodes without sponsorships:" (count without-sponsors))
+      (when (seq without-sponsors)
+        (println "  Episodes:" (map :title without-sponsors)))
+      (spit output-file (pr-str {:podcast podcast
+                                 :total_count (count with-sponsors)
+                                 :no_sponsors (vec (map #(dissoc % :sponsorships) without-sponsors))
+                                 :sponsorships with-sponsors}))
+      (println "Written to" output-file)
+      results)))
+
 (comment
   (def c (http-client))
   (login-to-fireside c)
@@ -377,6 +479,12 @@
     :title "test title"
     :url "http://test.url"
     :quote "test quote"})
+
+  (try
+    (purge-links {:client c
+                  :podcast (:podcast noblepayne.link-hoarder/data)
+                  :episode-guid (:guid noblepayne.link-hoarder/data)})
+    (catch Exception e (def error e) (throw e)))
 
   (doseq [{:keys [:title :href :quote] :as link} (noblepayne.link-hoarder/data :links)]
     (println href)

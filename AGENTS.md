@@ -375,7 +375,7 @@ Source files contain `(comment ...)` blocks at the bottom. These are evaluated w
 ;; From link_hoarder.clj comment block:
 (def data
   (-main
-   "https://h.docs.lol/6qhYpqFBQiOc5vdJE70wjg?both#"))
+   "https://h.docs.lol/URL?both"))
 
 ;; After evaluation, available as:
 noblepayne.link-hoarder/data
@@ -530,7 +530,7 @@ We ARE the scraper - our data comes FROM HedgeDoc. When we sync back, we're send
 - **Various formats** - `### [title](url)` for section headers, `[title](url)` inline, `- [title](url)` in lists
 - **Quotes use `>` blockquotes** - our scraper grabs lines starting with `>` after each link
 - **Talking points use `+`** - these are for the show, not scraped as quotes
-- **Our data is already deduped** - duplicates in HedgeDoc are filtered out when scraping
+- **Our data is deduped by `dedup-links`** - `extract-links` filters duplicate `:href` values, first occurrence wins
 
 #### Sync Specification (Action/Calculation/Data Pattern)
 
