@@ -86,6 +86,125 @@ Open the HTML preview to check tags, links, and formatting.
 (fs/publish-episode url "adfree" adfree-guid)
 ```
 
+### 5. Sync Chapters
+Chapters ship alongside the audio as CSV in `~/Downloads/workdir/`. The two
+feeds have **separate episodes** even when the audio is identical, so push
+chapters to both — the ad-free episode needs an explicit guid override.
+
+```clojure
+(def c (fs/ensure-login))
+
+;; public feed, from the guid in the show notes
+(fs/sync-chapters {:client c
+                   :podcast "linuxunplugged"
+                   :episode-guid (:guid data)
+                   :chapters-file "/home/wes/Downloads/workdir/Linux Unplugged 686 (Ads) Chapters.csv"})
+
+;; ad-free feed, needs its own guid
+(fs/sync-chapters {:client c
+                   :podcast "adfree"
+                   :episode-guid "9d553b2d-a2ac-4ca4-a7b4-00ffc319f4de"
+                   :chapters-file "/home/wes/Downloads/workdir/Linux Unplugged 686 (Premium) Chapters.csv"})
+```
+
+**Chapter CSV format** (`load-chapters-csv`):
+`number,position_seconds,timecode,name`
+
+**Ad marker CSV format** (`load-ads-csv`, parsed but not yet pushed):
+`number,start_seconds,end_seconds,start_timecode,end_timecode,name`
+
+**Timecode handling:** Fireside's `chapter[timecode_as_words]` field wants a
+human duration like `1h 17m 4s`, not a numeric timecode. `timecode->words`
+converts the CSV's `HH:MM:SS` column. Prefer the authored `timecode` column
+over recomputing from `position_seconds` — the column truncates while
+recomputation rounds, which drifts chapters by a second (1987.94s is written
+as `00:33:07`, not `00:33:08`). `seconds->words` is the fallback when the
+column is absent.
+
+`sync-chapters` only appends, so it **refuses to run** against an episode that
+already has chapters:
+
+```clojure
+(fs/fetch-chapter-ids c "linuxunplugged" guid)   ;; => [{:guid "..."} ...]
+(fs/delete-chapter {:client c :podcast "linuxunplugged"
+                    :episode-guid guid :chapter-guid "..."})
+;; or, if duplicating is genuinely what you want:
+(fs/sync-chapters {... :force? true})
+```
+
+Deleting a chapter posts `_method=delete` to
+`/chapters/<chapter-guid>` (not `/edit`) with the `csrf-token` meta tag
+from that chapter's edit page.
+
+### 6. Sync Sponsorships
+
+Sponsorships are a separate Fireside feature from chapters: a sponsor + a
+campaign, attached to a timecode. Note the naming trap — LUP's sponsors are
+called "sponsorships", not "ads".
+
+**For an episode that already has its sponsorships** (the normal case —
+episodes carry recurring sponsors), update the timecode in place:
+
+```clojure
+(fs/sync-sponsorship-times {:client c
+                            :podcast "linuxunplugged"
+                            :episode-guid (:guid data)
+                            :ads-file "/home/wes/Downloads/workdir/Linux Unplugged 686 (Ads) Ads.csv"
+                            :sponsor "Nebula"})
+```
+
+**For an episode with no sponsorships yet**, create them from the ads CSV:
+
+```clojure
+(fs/sync-sponsorships {:client c
+                       :podcast "linuxunplugged"
+                       :episode-guid (:guid data)
+                       :ads-file "/home/wes/Downloads/workdir/Linux Unplugged 686 (Ads) Ads.csv"})
+;; => {:pushed [...] :skipped ["Dynamic 1" "Dynamic 2"]}
+```
+
+The ads CSV mixes real sponsor reads with dynamic ad markers. **Dynamic
+markers are not sponsorships** — Fireside has no equivalent — so they are
+skipped and reported in `:skipped` rather than silently dropped.
+
+**Inspecting what's already there:**
+
+```clojure
+(fs/fetch-sponsorship-ids c "linuxunplugged" guid)
+;; => [{:sponsor "Nebula" :campaign "Managed Nebula"
+;;      :timecode_str "1 minute 1 second" :timecode_seconds 61
+;;      :guid "b8416e65-..."} ...]
+```
+
+#### Sponsorship form gotchas
+
+Three things that will waste your time if you don't know them:
+
+1. **The campaign dropdown is populated by JavaScript.** The new-sponsorship
+   page ships with a single placeholder option ("1Password Extended Access
+   Management"). The real list comes from
+   `/episodes/<guid>/update_campaigns?sponsor_id=<id>`, which returns a
+   *jQuery snippet*, not HTML. Scraping the page directly yields exactly one
+   wrong option and would silently file a sponsorship under the wrong
+   campaign. Use `fetch-campaigns`.
+2. **Post urlencoded, not multipart, despite the form saying
+   `enctype="multipart/form-data"`.** Multipart returns **500**.
+3. **Updates post to the sponsorship's own URL with `_method=patch`** — not
+   to `/edit`. The `/edit` page is only where you read the current values.
+
+#### Recurring sponsors on LUP
+
+Every recent episode carries the same two, and neither comes from the ads
+CSV:
+
+| Sponsor | Campaign |
+|---|---|
+| Nebula | Managed Nebula |
+| Jupiter Signal Network Membership | Jupiter Party Annual Membership |
+
+Only Nebula is in the ads CSV. The Jupiter membership is added by hand and
+should be left alone.
+
 ## Tag Handling Logic
 - **Storage/Markdown:** Tags are kept in the order they appear.
 - **`extract-metadata`:** Automatically **reverses** tags so that the most specific/recent ones appear first in some views.
