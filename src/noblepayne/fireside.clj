@@ -754,7 +754,9 @@
          guid (:guid data)
          links (:links data)
          total (count links)]
-     (when (not guid)
+     ;; Not (not guid): "" is truthy in Clojure, so a blanked-out
+     ;; placeholder would sail past and post to /episodes//edit.
+     (when (clojure.string/blank? (str guid))
        (throw (ex-info "No GUID available - check markdown or provide guid-override"
                        {:podcast podcast :url url})))
      (println "Episode GUID:" guid)

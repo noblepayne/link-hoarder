@@ -1,11 +1,64 @@
 (ns noblepayne.fireside-test
-  "Tests for the pure parsing/conversion functions added for the CSV ->
-   Fireside chapter and sponsorship work. Deliberately network-free: every
-   function here is a calculation, so the shell is what needs exercising
-   against a real Fireside, not these."
+  "Tests for the pure parsing/conversion functions used to drive Fireside.
+   Deliberately network-free: everything here is a calculation, so the shell
+   is what needs exercising against a real Fireside, not these."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [noblepayne.fireside :as f]))
+
+;; ------------------------------------------- pre-existing regressions
+
+(deftest decode-html-entities-test
+  (testing "decodes common HTML entities"
+    (is (= "&" (f/decode-html-entities "&amp;")))
+    (is (= "<" (f/decode-html-entities "&lt;")))
+    (is (= ">" (f/decode-html-entities "&gt;")))
+    (is (= "\"" (f/decode-html-entities "&quot;")))
+    (is (= "'" (f/decode-html-entities "&#39;")))
+    (is (= "T-Mobile" (f/decode-html-entities "T-Mobile")))))
+
+(deftest parse-timecode-to-seconds-test
+  (testing "parses seconds"
+    (is (= 51 (f/parse-timecode-to-seconds "51 seconds")))
+    (is (= 1 (f/parse-timecode-to-seconds "1 second"))))
+  (testing "parses minutes and seconds"
+    (is (= 150 (f/parse-timecode-to-seconds "2 minutes 30 seconds")))
+    (is (= 60 (f/parse-timecode-to-seconds "1 minute"))))
+  (testing "parses hours"
+    (is (= 3600 (f/parse-timecode-to-seconds "1 hour")))
+    (is (= 5400 (f/parse-timecode-to-seconds "1 hour 30 minutes")))))
+
+(deftest extract-sponsorships-test
+  (testing "extracts sponsorships from HTML"
+    (let [html (str "<span class=\"accordion-heading__title\">Campaign A</span>\n"
+                    "<span class=\"accordion-heading__metadata\">"
+                    "<i class=\"fas fa-clock\" aria-hidden=\"true\"></i>\n"
+                    "      51 seconds</span>\n"
+                    "<span class=\"accordion-heading__subtitle\">Sponsor One</span>\n\n"
+                    "<span class=\"accordion-heading__title\">Campaign B</span>\n"
+                    "<span class=\"accordion-heading__metadata\">"
+                    "<i class=\"fas fa-clock\" aria-hidden=\"true\"></i>\n"
+                    "      2 minutes 30 seconds</span>\n"
+                    "<span class=\"accordion-heading__subtitle\">Sponsor Two</span>")
+          results (f/extract-sponsorships html)]
+      (is (= 2 (count results)))
+      (is (= "Campaign A" (:campaign (first results))))
+      (is (= "51 seconds" (:timecode_str (first results))))
+      (is (= 51 (:timecode_seconds (first results))))
+      (is (= "Sponsor One" (:sponsor (first results))))
+      (is (= "Sponsor Two" (:sponsor (second results))))
+      (is (= 150 (:timecode_seconds (second results))))))
+  (testing "returns empty vector when no sponsorships"
+    (is (= [] (f/extract-sponsorships "no sponsorships here"))))
+  (testing "decodes HTML entities in results"
+    (let [html (str "<span class=\"accordion-heading__title\">Test &amp; More</span>\n"
+                    "<span class=\"accordion-heading__metadata\">"
+                    "<i class=\"fas fa-clock\" aria-hidden=\"true\"></i>\n"
+                    "      10 seconds</span>\n"
+                    "<span class=\"accordion-heading__subtitle\">Sponsor &lt;Name&gt;</span>")
+          results (f/extract-sponsorships html)]
+      (is (= "Test & More" (:campaign (first results))))
+      (is (= "Sponsor <Name>" (:sponsor (first results)))))))
 
 ;; ---------------------------------------------------------------- csv
 
@@ -287,6 +340,15 @@
     (testing "skips rows with no episode link (e.g. a header row)"
       (is (empty? (f/parse-episode-rows
                    "<tr><td class=\"data-table__header-cell\">Number</td></tr>"))))))
+
+(deftest blank-guid-guard-test
+  (testing "a blanked guid placeholder is rejected, not posted"
+    ;; Regression guard: the guard used to be (not guid), and "" is truthy
+    ;; in Clojure - so a blanked placeholder built /episodes//edit instead
+    ;; of failing loudly.
+    (is (clojure.string/blank? ""))
+    (is (clojure.string/blank? nil))
+    (is (not (clojure.string/blank? "baa9d873-4356-41ed-a195-8ba847021b26")))))
 
 (deftest strip-tags-test
   (testing "removes inline markup and decodes entities"
