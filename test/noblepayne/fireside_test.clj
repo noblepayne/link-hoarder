@@ -559,3 +559,65 @@
                 ["episode[title]" "episode[status]"
                  "episode[publish_at(1i)]" "episode[publish_at(5i)]"
                  "episode[mp3_upload_url]"]))))
+
+(deftest mp3-status-error-test
+  (testing "preserves processing failure fields instead of idle-success"
+    ;; Highest-leverage audit test: the dropped error/error_message once
+    ;; made failed transcodes read as success everywhere downstream.
+    (with-redefs [noblepayne.fireside/fetch-page!
+                  (fn [_ _ _] "{\"processing\":false,\"error\":true,\"error_message\":\"CarrierWave::DownloadError: gone\"}")]
+      (let [st (f/mp3-status {:client nil :podcast "p" :episode-guid "g"})]
+        (is (false? (:processing st)))
+        (is (true? (:error st)))
+        (is (= "CarrierWave::DownloadError: gone" (:error-message st)))
+        (is (nil? (:url st)))))))
+
+(deftest await-processed-test
+  (testing "returns once the url appears"
+    (let [calls (atom 0)]
+      (with-redefs [noblepayne.fireside/mp3-status
+                    (fn [_] (swap! calls inc)
+                      (if (< @calls 3)
+                        {:processing false :url nil}
+                        {:processing false :url "https://x/y.mp3"}))]
+        (let [st (f/await-processed {:client nil :podcast "p" :episode-guid "g"}
+                                    :interval-ms 1 :deadline-ms 5000)]
+          (is (= "https://x/y.mp3" (:url st)))
+          (is (= 3 @calls))))))
+  (testing "throws the processing failure with its message"
+    (with-redefs [noblepayne.fireside/mp3-status
+                  (fn [_] {:processing false :url nil :error true :error-message "boom"})]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"processing failed"
+                            (f/await-processed {:client nil :podcast "p" :episode-guid "g"}
+                                               :interval-ms 1 :deadline-ms 5000)))))
+  (testing "times out instead of returning url-less success"
+    (with-redefs [noblepayne.fireside/mp3-status
+                  (fn [_] {:processing false :url nil})]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Timed out"
+                            (f/await-processed {:client nil :podcast "p" :episode-guid "g"}
+                                               :interval-ms 1 :deadline-ms 50))))))
+
+(deftest attach-refuses-incomplete-scrape-test
+  (testing "never POSTs when required fields are missing from the scrape"
+    (let [posted (atom false)
+          page {:tag :root :content [{:tag :form :attrs {:id "edit_episode_g"}
+                                      :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                    noblepayne.fireside/curl-post-form! (fn [_] (reset! posted true) {:status 302})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing to POST"
+                              (f/attach-mp3! {:client nil :podcast "p" :episode-guid "g"
+                                              :temp-url "" :file-name "e.mp3"})))
+        (is (false? @posted))))))
+
+(deftest episode-lock-test
+  (testing "second claim refuses while the first is held"
+    (let [g "test-lock-guid"]
+      (try
+        (let [lock (f/acquire-episode-lock! g)]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already running"
+                                (f/acquire-episode-lock! g)))
+          (f/release-episode-lock! lock)
+          (is (some? (f/acquire-episode-lock! g)))
+          (f/release-episode-lock! (f/episode-lock-file g)))
+        (finally
+          (.delete (f/episode-lock-file g)))))))

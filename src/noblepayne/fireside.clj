@@ -948,7 +948,7 @@
         (.delete body-file)
         (.delete out-file)))))
 
-(declare mp3-status poll-mp3-status)
+(declare mp3-status)
 
 (def required-episode-keys
   "Episode-form fields that must survive the scrape, or the POST is
@@ -994,33 +994,33 @@
                       "episode[description]" (str/trim (str (get controls "episode[description]" "")))
                       "episode[subtitle]" (str/trim (str (get controls "episode[subtitle]" "")))
                       "button" "")
-        missing (remove #(contains? params %) required-episode-keys)
-        {:keys [body boundary]} (multipart-fields-bytes params)
-          ;; Via curl, not hato: only curl lets us not follow the redirect.
-        {post-status :status post-location :location post-text :body}
-        (curl-post-form!
-         {:url base :body body
-          :content-type (str "multipart/form-data; boundary=" boundary)
-          :cookie (cookies-for client base)
-          :headers {"Referer" (str base "/edit")
-                    "Origin" FIRESIDE-BASE-URL
-                    "User-Agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                    "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}})
-        resp-body (str post-text)]
+        missing (remove #(contains? params %) required-episode-keys)]
     (when (seq missing)
       (throw (ex-info "Refusing to POST: episode form scrape missed required fields"
                       {:episode-guid episode-guid :missing (vec missing)})))
-    (when (and post-location (re-find #"/login(\?.*)?$" post-location))
-      (throw (ex-info "Session expired during mp3 attach: nothing was written"
-                      {:episode-guid episode-guid :landed-on post-location})))
-    (when (not (<= 200 post-status 399))
-      (throw (ex-info "Failed to attach mp3"
-                      {:status post-status :episode-guid episode-guid
-                       :location post-location
-                       :field-names (sort (keys params))
-                       :field-count (count params)
-                       :body-bytes (alength ^bytes body)
-                       :response-snippet (subs resp-body 0 (min 2000 (count resp-body)))})))
+    (let [{:keys [body boundary]} (multipart-fields-bytes params)
+          ;; Via curl, not hato: only curl lets us not follow the redirect.
+          {post-status :status post-location :location post-text :body}
+          (curl-post-form!
+           {:url base :body body
+            :content-type (str "multipart/form-data; boundary=" boundary)
+            :cookie (cookies-for client base)
+            :headers {"Referer" (str base "/edit")
+                      "Origin" FIRESIDE-BASE-URL
+                      "User-Agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                      "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}})
+          resp-body (str post-text)]
+      (when (and post-location (re-find #"/login(\?.*)?$" post-location))
+        (throw (ex-info "Session expired during mp3 attach: nothing was written"
+                        {:episode-guid episode-guid :landed-on post-location})))
+      (when (not (<= 200 post-status 399))
+        (throw (ex-info "Failed to attach mp3"
+                        {:status post-status :episode-guid episode-guid
+                         :location post-location
+                         :field-names (sort (keys params))
+                         :field-count (count params)
+                         :body-bytes (alength ^bytes body)
+                         :response-snippet (subs resp-body 0 (min 2000 (count resp-body)))})))
       ;; The 302 only means Rails accepted the POST. Confirm the write landed
       ;; with clean GETs, retrying: reads can race the commit across
       ;; Fireside's backends (proven live — the staged URL appeared on the
@@ -1028,30 +1028,30 @@
       ;; value present, OR the field consumed (blank) with processing
       ;; actually underway or done — Fireside clears the temp field once it
       ;; takes the file, which once false-failed a verification mid-run.
-    (loop [attempt 1]
-      (let [fresh (fetch-as-hickory {:http-client client :url (str base "/edit")})
-            stored (get (successful-controls fresh form-id) "episode[mp3_upload_url]" ::missing)]
-        (cond
-          (= (str stored) staged) true
-          (and (str/blank? (str stored))
-               (not (str/blank? staged))
-               (let [st (try (mp3-status {:client client :podcast podcast
-                                          :episode-guid episode-guid})
-                             (catch Exception _ nil))]
+      (loop [attempt 1]
+        (let [fresh (fetch-as-hickory {:http-client client :url (str base "/edit")})
+              stored (get (successful-controls fresh form-id) "episode[mp3_upload_url]" ::missing)]
+          (cond
+            (= (str stored) staged) true
+            (and (str/blank? (str stored))
+                 (not (str/blank? staged))
+                 (let [st (try (mp3-status {:client client :podcast podcast
+                                            :episode-guid episode-guid})
+                               (catch Exception _ nil))]
                  ;; A stale :url (previous pass's audio) must not count:
                  ;; only processing=true, or a url newer than the one we
                  ;; saw before attaching, proves OUR file was taken.
-                 (and st (or (:processing st)
-                             (and (:url st)
-                                  (not= ::unset previous-url)
-                                  (not= (:url st) previous-url))))))
-          true
-          (>= attempt 12)
-          (throw (ex-info "Attach POST answered but the staged URL never appeared on the page"
-                          {:status post-status :episode-guid episode-guid
-                           :staged staged :stored stored}))
-          :else (do (Thread/sleep 5000)
-                    (recur (inc attempt))))))))
+                   (and st (or (:processing st)
+                               (and (:url st)
+                                    (not= ::unset previous-url)
+                                    (not= (:url st) previous-url))))))
+            true
+            (>= attempt 12)
+            (throw (ex-info "Attach POST answered but the staged URL never appeared on the page"
+                            {:status post-status :episode-guid episode-guid
+                             :staged staged :stored stored}))
+            :else (do (Thread/sleep 5000)
+                      (recur (inc attempt)))))))))
 
 (defn mp3-status
   "Read check_mp3_status. Returns {:processing bool :url :download-url}."
@@ -1061,68 +1061,18 @@
         m (json/read-str (fetch-page! client url "mp3 status"))]
     {:processing (boolean (get m "processing")) :url (get m "url") :download-url (get m "download_url") :error (boolean (get m "error")) :error-message (get m "error_message")}))
 
-(defn delete-mp3!
-  "Remove the episode audio. The legacy delete_mp3 route is gone (404s and
-  the UI offers no remove button), so deletion means clearing
-  episode[mp3_upload_url] through the normal multipart form and
-  submitting. Waits afterwards until the bytes url actually clears: the
-  clear can race a settling transcode, so one status read cannot prove
-  deletion, and a stale url on the first read must not fail the run."
-  [{:keys [client podcast episode-guid]}]
-  (let [legacy (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
-                              "episodes" episode-guid "delete_mp3"])
-        resp (http/request {:method :get :url legacy :http-client client
-                            :throw-exceptions false})
-        args {:client client :podcast podcast :episode-guid episode-guid}]
-    (when (not= 404 (:status resp))
-      (println "  note: legacy delete_mp3 answered" (:status resp) "- route may be back"))
-    (attach-mp3! {:client client :podcast podcast :episode-guid episode-guid
-                  :temp-url "" :file-name "empty.mp3"})
-    (let [deadline (+ (System/currentTimeMillis) 120000)]
-      (loop [n 1]
-        (let [st (mp3-status args)]
-          (println (format "  mp3 clear poll %d: processing=%s url=%s" n (:processing st) (boolean (:url st))))
-          (cond
-            (:error st)
-            (throw (ex-info "mp3 status reports failure after delete"
-                            {:episode-guid episode-guid
-                             :error-message (:error-message st)
-                             :status st}))
-            (nil? (:url st)) true
-            (> (System/currentTimeMillis) deadline)
-            (throw (ex-info "clearing mp3_upload_url did not take effect"
-                            {:episode-guid episode-guid :status st}))
-            :else (do (Thread/sleep 5000)
-                      (recur (inc n)))))))))
-
-(defn poll-mp3-status
-  "Poll check_mp3_status until processing clears or the deadline passes.
-  Logs every poll so the first runs calibrate real processing durations."
-  [{:keys [episode-guid] :as args}
-   & {:keys [interval-ms deadline-ms]
-      :or {interval-ms 10000 deadline-ms 3600000}}]
-  (let [deadline (+ (System/currentTimeMillis) (long deadline-ms))]
-    (loop [n 1]
-      (let [st (mp3-status args)]
-        (println (format "  mp3 poll %d: processing=%s" n (:processing st)))
-        (when (:error st)
-          (throw (ex-info "mp3 processing failed"
-                          {:episode-guid episode-guid
-                           :error-message (:error-message st)
-                           :status st})))
-        (if (:processing st)
-          (do (when (> (System/currentTimeMillis) deadline)
-                (throw (ex-info "Timed out waiting for mp3 processing"
-                                {:episode-guid episode-guid :deadline-ms deadline-ms})))
-              (Thread/sleep (long interval-ms))
-              (recur (inc n)))
-          st)))))
+;; NOTE (2026-10-05): delete-mp3! and poll-mp3-status were removed.
+;; Clearing episode[mp3_upload_url] cannot remove already-processed audio
+;; (the legacy delete_mp3 route 404s and the UI has no remove control), so a
+;; delete-then-reupload "twice" flow is unachievable against current
+;; Fireside. A single attach+process embeds the episode chapters exactly
+;; (verified live on two episodes); upload-and-verify-mp3 does exactly that.
 
 (defn await-processed
   "Poll check_mp3_status until a bytes url appears, processing fails, or
-  the deadline passes. Unlike poll-mp3-status (which returns on the first
-  processing=false, including 'job not started yet'), this only returns
-  success once (:url st) is present. Logs every poll."
+  the deadline passes. Returns success only once (:url st) is present —
+  a bare processing=false also covers 'job not started yet'. Logs every
+  poll."
   [{:keys [episode-guid] :as args}
    & {:keys [interval-ms deadline-ms]
       :or {interval-ms 10000 deadline-ms 3600000}}]
@@ -1274,41 +1224,34 @@
       (when-not (str/blank? (str v)) (str v)))
     (catch Exception _ nil)))
 
-(defn upload-mp3-twice
-  "Full flow: upload, wait, delete (verified), upload again, wait, then
-  download the processed file and verify its embedded chapters exactly
-  against chapters-file. Refetches the edit page before the second upload
-  (never submits a stale presign or token). Holds the episode lock for the
-  whole run; on any failure after the delete, best-effort restores the
-  pre-run temp url before rethrowing, so the episode is never left
-  deliberately silent. Returns {:status :report}."
+(defn upload-and-verify-mp3
+  "Single verified pass: S3 upload, attach, await processing, download
+  the processed file and verify its embedded chapters exactly against
+  chapters-file. A second pass adds nothing: current Fireside writes the
+  episode's chapters into the file on the first processing (verified live
+  on two episodes), and processed audio cannot be deleted anyway (the
+  legacy delete_mp3 route 404s), so the old upload/delete/upload 'twice'
+  ritual is retired. Holds the episode lock for the whole run; on
+  verification failure after the new audio went live, best-effort
+  restores the pre-run temp url before rethrowing. Returns
+  {:status :report}."
   [{:keys [client podcast episode-guid mp3-path chapters-file]}]
   (let [expected (load-chapters-csv chapters-file)
         args {:client client :podcast podcast :episode-guid episode-guid}
         lock (acquire-episode-lock! episode-guid)
         fallback (current-temp-url args)]
     (try
-      (println "Pass 1/2...")
-      (let [pass1 (upload-mp3 (assoc args :mp3-path mp3-path))]
-        (when-not (:url pass1)
-          (throw (ex-info "Pass 1 produced no bytes url; refusing to delete good audio"
-                          {:status pass1})))
-        (println "Deleting...")
+      (println "Uploading...")
+      (let [final (upload-mp3 (assoc args :mp3-path mp3-path))
+            tmp (java.io.File/createTempFile "fireside-verify-" ".mp3")]
         (try
-          (delete-mp3! args)
-          (println "Pass 2/2 (fresh presign)...")
-          (let [final (upload-mp3 (assoc args :mp3-path mp3-path
-                                         :previous-url (:url pass1)))
-                tmp (java.io.File/createTempFile "fireside-verify-" ".mp3")]
-            (try
-              (println "Downloading processed file for verification...")
-              (download-mp3! (:url final) (.getAbsolutePath tmp))
-              (println "Comparing embedded chapters...")
-              (compare-chapters expected (ffprobe-chapters (.getAbsolutePath tmp)))
-              (println "Chapters verified exactly.")
-              {:status final
-               :report {:chapters (count expected) :verified true}}
-              (finally (.delete tmp))))
+          (println "Downloading processed file for verification...")
+          (download-mp3! (:url final) (.getAbsolutePath tmp))
+          (println "Comparing embedded chapters...")
+          (compare-chapters expected (ffprobe-chapters (.getAbsolutePath tmp)))
+          (println "Chapters verified exactly.")
+          {:status final
+           :report {:chapters (count expected) :verified true}}
           (catch Throwable t
             (when fallback
               (println "Attempting rollback to pre-run audio...")
@@ -1318,7 +1261,8 @@
                 (println "Rollback staged the pre-run temp url.")
                 (catch Exception r
                   (println "Rollback failed:" (ex-message r)))))
-            (throw t))))
+            (throw t))
+          (finally (.delete tmp))))
       (finally
         (release-episode-lock! lock)))))
 
