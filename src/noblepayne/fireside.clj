@@ -966,6 +966,64 @@
     "episode[publish_at(3i)]" "episode[publish_at(4i)]" "episode[publish_at(5i)]"
     "episode[mp3_upload_url]"})
 
+(defn assert-required-fields!
+  "Throw unless every required-episode-keys member is present in params.
+  Refusing a bad scrape beats wiping title/status/schedule in one write."
+  [params episode-guid]
+  (let [missing (remove #(contains? params %) required-episode-keys)]
+    (when (seq missing)
+      (throw (ex-info "Refusing to POST: episode form scrape missed required fields"
+                      {:episode-guid episode-guid :missing (vec missing)})))
+    true))
+
+(defn- post-episode-form!
+  "POST mirrored episode-form params via curl and never follow redirects.
+  Throws on session expiry or a non-2xx/3xx answer. Returns
+  {:post-status :post-location :resp-body}."
+  [{:keys [client base params episode-guid]}]
+  (let [{:keys [body boundary]} (multipart-fields-bytes params)
+        {post-status :status post-location :location post-text :body}
+        (curl-post-form!
+         {:url base :body body
+          :content-type (str "multipart/form-data; boundary=" boundary)
+          :cookie (cookies-for client base)
+          :headers {"Referer" (str base "/edit")
+                    "Origin" FIRESIDE-BASE-URL
+                    "User-Agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+                    "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}})
+        resp-body (str post-text)]
+    (when (and post-location (re-find #"/login(\\?.*)?$" post-location))
+      (throw (ex-info "Session expired during episode update: nothing was written"
+                      {:episode-guid episode-guid :landed-on post-location})))
+    (when (not (<= 200 post-status 399))
+      (throw (ex-info "Failed to update episode"
+                      {:status post-status :episode-guid episode-guid
+                       :location post-location
+                       :field-names (sort (keys params))
+                       :field-count (count params)
+                       :body-bytes (alength ^bytes body)
+                       :response-snippet (subs resp-body 0 (min 2000 (count resp-body)))})))
+    {:post-status post-status :post-location post-location :resp-body resp-body}))
+
+(defn- await-fields!
+  "Re-read the edit page until every key in expect matches the stored
+  value (string-compared), retrying boundedly. Throws with
+  expected-vs-stored on permanent mismatch."
+  [client base form-id expect episode-guid]
+  (loop [attempt 1]
+    (let [fresh (fetch-as-hickory {:http-client client :url (str base "/edit")})
+          stored (successful-controls fresh form-id)
+          bad (remove (fn [[k v]] (= (str (get stored k ::missing)) (str v))) expect)]
+      (cond
+        (empty? bad) true
+        (>= attempt 12)
+        (throw (ex-info "Episode fields never matched after update"
+                        {:episode-guid episode-guid
+                         :mismatched (into {} (map (fn [[k v]] [k {:expected (str v)
+                                                                   :stored (str (get stored k ::missing))}]) bad))}))
+        :else (do (Thread/sleep 5000)
+                  (recur (inc attempt)))))))
+
 (defn attach-mp3!
   "Point the episode at temp-url and submit. Re-reads the edit page fresh
   (never submits a form parsed minutes ago), mirrors every successful
@@ -1052,6 +1110,49 @@
                              :staged staged :stored stored}))
             :else (do (Thread/sleep 5000)
                       (recur (inc attempt)))))))))
+
+(def episode-status-values
+  "Visibility keyword -> episode[status] form value. 687 and adfree-687
+  both sit at Private until someone says otherwise."
+  {:public "1" :private "0" :unlisted "2"})
+
+(defn schedule-episode!
+  "Set visibility and publish time without touching audio. publish-at is
+  Pacific wall-clock [year month day hour minute] as integers (Fireside
+  renders the form in America/Los_Angeles). Minute must land on a
+  15-minute step and hour is 24h; anything else throws rather than
+  rounding silently. Values are encoded exactly as the selects carry
+  them: year/month/day unpadded, hour/minute zero-padded. Verifies every
+  written field by re-reading before returning true."
+  [{:keys [client podcast episode-guid status publish-at]}]
+  (let [s (get episode-status-values status)]
+    (when-not s
+      (throw (ex-info "Unknown visibility status"
+                      {:status status :known (vec (keys episode-status-values))})))
+    (let [[y mo d h mi] publish-at]
+      (when-not (contains? #{0 15 30 45} mi)
+        (throw (ex-info "Publish minute must be a 15-minute step"
+                        {:minute mi})))
+      (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                                "episodes" episode-guid])
+            form-id (str "edit_episode_" episode-guid)
+            page (fetch-as-hickory {:http-client client :url (str base "/edit")})
+            controls (successful-controls page form-id)
+            overrides {"episode[status]" s
+                       "episode[publish_at(1i)]" (str y)
+                       "episode[publish_at(2i)]" (str mo)
+                       "episode[publish_at(3i)]" (str d)
+                       "episode[publish_at(4i)]" (format "%02d" h)
+                       "episode[publish_at(5i)]" (format "%02d" mi)}
+            params (merge controls overrides
+                          {"episode[description]" (str/trim (str (get controls "episode[description]" "")))
+                           "episode[subtitle]" (str/trim (str (get controls "episode[subtitle]" "")))
+                           "button" ""})]
+        (assert-required-fields! params episode-guid)
+        (post-episode-form! {:client client :base base :params params
+                             :episode-guid episode-guid})
+        (await-fields! client base form-id overrides episode-guid)
+        true))))
 
 (defn mp3-status
   "Read check_mp3_status. Returns {:processing bool :url :download-url}."

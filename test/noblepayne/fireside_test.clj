@@ -621,3 +621,66 @@
           (f/release-episode-lock! (f/episode-lock-file g)))
         (finally
           (.delete (f/episode-lock-file g)))))))
+
+(deftest schedule-episode-validation-test
+  (testing "unknown visibility is refused before any HTTP"
+    (let [called (atom false)]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] (reset! called true) nil)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown visibility"
+                              (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                                    :status :everywhere :publish-at [2026 10 4 13 0]})))
+        (is (false? @called)))))
+  (testing "off-step minutes are refused, not rounded"
+    (doseq [mi [1 7 30 44 59]]
+      (when-not (contains? #{0 15 30 45} mi)
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"15-minute"
+                              (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                                    :status :private :publish-at [2026 10 4 13 mi]}))))))
+  (testing "visibility keywords map to the documented form values"
+    (is (= {"public" "1" "private" "0" "unlisted" "2"}
+           (into {} (map (fn [[k v]] [(name k) v]) f/episode-status-values))))))
+
+(deftest schedule-episode-post-test
+  (testing "encodes selects exactly as the page carries them and verifies by re-read"
+    (let [sent (atom nil)
+          page {:tag :root
+                :content [{:tag :form :attrs {:id "edit_episode_g"}
+                           :content [{:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                     {:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                     {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"}}
+                                     {:tag :textarea :attrs {:name "episode[description]"} :content ["D"]}
+                                     {:tag :textarea :attrs {:name "episode[subtitle]"} :content ["S"]}
+                                     {:tag :input :attrs {:type "hidden" :name "episode[mp3_upload_url]" :value ""}}
+                                     {:tag :select :attrs {:name "episode[status]"}
+                                      :content [{:tag :option :attrs {:value "0" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(1i)]"}
+                                      :content [{:tag :option :attrs {:value "2026" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(2i)]"}
+                                      :content [{:tag :option :attrs {:value "10" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(3i)]"}
+                                      :content [{:tag :option :attrs {:value "4" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(4i)]"}
+                                      :content [{:tag :option :attrs {:value "13" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(5i)]"}
+                                      :content [{:tag :option :attrs {:value "00" :selected "selected"}}]}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                    noblepayne.fireside/post-episode-form!
+                    (fn [{:keys [params]}] (reset! sent params) {:post-status 302})]
+        ;; re-read echoes the written values: override the fixture on 2nd+ reads
+        (with-redefs [noblepayne.fireside/successful-controls
+                      (let [orig (deref #'noblepayne.fireside/successful-controls)]
+                        (fn [pg id]
+                          (let [m (orig pg id)]
+                            (if @sent (merge m (select-keys @sent ["episode[status]"
+                                                                                  "episode[publish_at(1i)]" "episode[publish_at(2i)]"
+                                                                                  "episode[publish_at(3i)]" "episode[publish_at(4i)]"
+                                                                                  "episode[publish_at(5i)]"]))
+                                m))))]
+          (is (true? (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                           :status :unlisted :publish-at [2026 10 5 9 30]})))
+          (is (= {"episode[status]" "2"
+                  "episode[publish_at(1i)]" "2026" "episode[publish_at(2i)]" "10"
+                  "episode[publish_at(3i)]" "5" "episode[publish_at(4i)]" "09"
+                  "episode[publish_at(5i)]" "30"}
+                 (select-keys @sent ["episode[status]" "episode[publish_at(1i)]" "episode[publish_at(2i)]"
+                                     "episode[publish_at(3i)]" "episode[publish_at(4i)]" "episode[publish_at(5i)]"]))))))))
