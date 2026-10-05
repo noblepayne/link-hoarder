@@ -1240,7 +1240,7 @@
     (if (.createNewFile ^java.io.File f)
       (do (spit (.getPath ^java.io.File f)
                 (str "pid=" (.getName (java.lang.management.ManagementFactory/getRuntimeMXBean))
-                     " since=" (str (java.time.Instant/now)) "\n"))
+                     " since=" (java.time.Instant/now) "\n"))
           f)
       (let [age-s (quot (- (System/currentTimeMillis) (.lastModified ^java.io.File f)) 1000)]
         (throw (ex-info "episode audio flow is already running elsewhere; refusing to start"
