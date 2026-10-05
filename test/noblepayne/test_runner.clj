@@ -5,7 +5,8 @@
 (def test-namespaces
   "All test namespaces to run."
   '[noblepayne.link-hoarder-test
-    noblepayne.fireside-test])
+    noblepayne.fireside-test
+    noblepayne.json-test])
 
 (defn run-tests
   "Run all test namespaces. Accepts options:

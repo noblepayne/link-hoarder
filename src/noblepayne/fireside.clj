@@ -1,9 +1,12 @@
 (ns noblepayne.fireside
   (:gen-class)
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
+            [clojure.string :as str]
             [hato.client :as http]
             [hickory.core :as hickory]
             [hickory.select :as hs]
+            [noblepayne.json :as json]
             [noblepayne.link-hoarder :as lh]))
 
 ;; Setup
@@ -640,6 +643,679 @@
           (do (println "  skipping" (:name row) "- not a Fireside sponsor")
               (recur (rest remaining) pushed (conj skipped (:name row)))))
         {:pushed pushed :skipped skipped}))))
+
+(defn fetch-page!
+  "GET url and return the body. Throws unless we land a 200 on the URL we
+  asked for: Fireside answers an expired session with a redirect to /login
+  served as 200, which a bare status check would accept as success."
+  [client url what]
+  (let [resp (http/request {:method :get :url url :http-client client})
+        uri (str (:uri resp))]
+    (when (re-find #"/login(\?.*)?$" uri)
+      (throw (ex-info (str "Not logged in while reading " what)
+                      {:url url :landed-on uri
+                       :hint "session expired - log in again"})))
+    (when (not= 200 (:status resp))
+      (throw (ex-info (str "Could not read " what)
+                      {:url url :status (:status resp) :landed-on uri})))
+    (:body resp)))
+
+(defn s3-upload-form
+  "Scrape the S3 presigned MP3 upload off the episode edit page. Returns
+  {:url :fields} where fields is the full presign map to forward verbatim.
+  The page carries four presigned forms (mp3, transcript, cover, header)
+  with stable ids, so select episode_mp3_form_<guid> — never a form
+  index — and insist on exactly one match."
+  [{:keys [client podcast episode-guid]}]
+  (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                           "episodes" episode-guid "edit"])
+        html (fetch-page! client url "the episode edit page")
+        pat (re-pattern (str "(?s)<form[^>]*id=\"episode_mp3_form_"
+                             (java.util.regex.Pattern/quote episode-guid)
+                             "\"[^>]*>"))
+        ;; No capture group in pat, so each match is the whole tag string.
+        tags (re-seq pat html)]
+    (when (not= 1 (count tags))
+      (throw (ex-info "Expected exactly one mp3 upload form on the edit page"
+                      {:url url :found (count tags)})))
+    (let [tag (first tags)
+          data-url (second (re-find #"data-url=\"([^\"]+)\"" tag))
+          [_ q1 q2] (re-find #"data-form-data=(?:\"([^\"]*)\"|'([^']*)')" tag)
+          raw (or q1 q2)]
+      (when (str/blank? data-url)
+        (throw (ex-info "Mp3 upload form has no data-url" {:url url})))
+      (when (str/blank? raw)
+        (throw (ex-info "Mp3 upload form has no data-form-data" {:url url})))
+      {:url data-url
+       :fields (json/read-str (decode-html-entities raw))})))
+
+(defn rewrite-s3-key
+  "Replace the presigned key's trailing segment with a fresh <uuid>.mp3.
+  Keeps pop-append semantics: whatever the last segment is, it goes, so a
+  policy-side key-shape change cannot silently produce a wrong key."
+  [s3-key]
+  (let [parts (str/split s3-key #"/")]
+    (str/join "/" (conj (vec (butlast parts)) (str (random-uuid) ".mp3")))))
+
+(defn multipart-bytes
+  "Build a multipart/form-data body as a byte array with a known length.
+  Needed because hato's multipart always streams chunked (no
+  Content-Length) and S3 presigned POSTs answer 411 Length Required.
+  Field order is load-bearing: presign fields first, then the Content-Type
+  field, then the file part LAST. S3 ignores any field after the file
+  part, so a trailing Content-Type fails the policy with a 403 even
+  though the bytes are present. Returns {:body :boundary
+  :content-length}."
+  [fields file-name file-bytes]
+  (let [boundary (str "------------------------" (random-uuid))
+        out (java.io.ByteArrayOutputStream.)
+        write-str (fn [s] (.write out (.getBytes (str s))))
+        write-bytes (fn [b] (.write out ^bytes b))
+        ;; The policy demands a Content-Type field. If the presign ever
+        ;; starts including one, prefer it over the hardcoded value rather
+        ;; than sending the field twice.
+        fields (if (contains? fields "Content-Type")
+                 fields
+                 (assoc fields "Content-Type" "audio/mp3"))
+        ;; ...but the value must travel BEFORE the file part regardless.
+        ordered (concat (remove (fn [[k _]] (= k "Content-Type")) fields)
+                        [["Content-Type" (get fields "Content-Type")]])]
+    (doseq [[k v] ordered]
+      (write-str (str "--" boundary "\r\n"))
+      (write-str (str "Content-Disposition: form-data; name=\"" k "\"\r\n"))
+      (write-str "\r\n")
+      (write-bytes (.getBytes (str v)))
+      (write-bytes (.getBytes "\r\n")))
+    (write-str (str "--" boundary "\r\n"))
+    (write-str (str "Content-Disposition: form-data; name=\"file\"; filename=\"" file-name "\"\r\n"))
+    (write-str "Content-Type: application/octet-stream\r\n")
+    (write-str "\r\n")
+    (write-bytes file-bytes)
+    (write-bytes (.getBytes "\r\n"))
+    (write-str (str "--" boundary "--\r\n"))
+    {:body (.toByteArray out)
+     :boundary boundary
+     :content-length (alength (.toByteArray out))}))
+
+(defn multipart-fields-bytes
+  "Build a fields-only multipart/form-data body with a known length.
+  Same reason as multipart-bytes: hato streams chunked and some
+  endpoints 500 on it. Multi-value names become repeated parts."
+  [fields]
+  (let [boundary (str "------------------------" (random-uuid))
+        out (java.io.ByteArrayOutputStream.)
+        write-str (fn [s] (.write out (.getBytes (str s))))
+        parts (mapcat (fn [[k v]]
+                        (if (sequential? v)
+                          (map (fn [x] [k x]) v)
+                          [[k v]]))
+                      fields)]
+    (doseq [[k v] parts]
+      (write-str (str "--" boundary "\r\n"))
+      (write-str (str "Content-Disposition: form-data; name=\"" k "\"\r\n"))
+      (write-str "\r\n")
+      (write-str (str v))
+      (write-str "\r\n"))
+    (write-str (str "--" boundary "--\r\n"))
+    {:body (.toByteArray out)
+     :boundary boundary}))
+
+(defn temp-file-url
+  "Build the staged temp-file URL the way the browser does: endpoint plus
+  the S3 key with RAW slashes. S3's own Location echoes the key
+  percent-encoded (%2F), and that encoded form makes CarrierWave report
+  'Temp file no longer exists' on a file that fetches fine (proven live:
+  restaging the identical object with raw slashes processed immediately)."
+  [endpoint s3-key]
+  (str (str/replace (str endpoint) #"/$" "") "/" s3-key))
+
+(defn post-file-to-s3!
+  "POST file to a presigned S3 URL with the presign fields. The body is
+  built by multipart-bytes (known length: S3 answers 411 to hato's
+  chunked streaming multipart). Returns the temp-file location. Handles
+  303 (Location header), 201 (Location in XML body) and 204 (constructed
+  from endpoint plus key), and throws on anything else. Never returns
+  nil."
+  [{:keys [url fields file]}]
+  (let [f (clojure.java.io/file file)]
+    (when-not (.exists f)
+      (throw (ex-info "MP3 file does not exist" {:file (str file)})))
+    (when (str/blank? (get fields "key"))
+      (throw (ex-info "Presign fields have no key" {:url url})))
+    ;; Bytes, not a stream: the JDK sets Content-Length from a byte[]
+    ;; body automatically, which is what S3 demands.
+    (let [file-bytes (java.nio.file.Files/readAllBytes (.toPath f))
+          s3-key (rewrite-s3-key (get fields "key"))
+          {:keys [body boundary]} (multipart-bytes (assoc fields "key" s3-key)
+                                                   (.getName f)
+                                                   file-bytes)]
+      ;; hato's own errors carry the full request map including the 72MB
+      ;; body, which sends clojure.main's error printer into a ten-minute
+      ;; pprint spiral. Catch and rethrow with the body summarized.
+      (try
+        (let [resp (http/post url {:body body
+                                   :headers {"Content-Type"
+                                             (str "multipart/form-data; boundary=" boundary)}})]
+          (cond
+            (= 303 (:status resp))
+            (temp-file-url url s3-key)
+
+            (= 201 (:status resp))
+            (do (when-not (re-find #"(?s)<Location>.*?</Location>" (str (:body resp)))
+                  (throw (ex-info "S3 answered 201 with no Location in body"
+                                  {:url url})))
+                ;; Ignore S3's echoed Location: it percent-encodes the key
+                ;; (%2F), which poisons Fireside's downloader. Rebuild from
+                ;; the key we actually stored (browser shape). 201 already
+                ;; proves the object is there.
+                (temp-file-url url s3-key))
+
+            (= 204 (:status resp))
+            (temp-file-url url s3-key)
+
+            :else
+            (let [b (str (:body resp))]
+              (throw (ex-info "S3 upload failed"
+                              {:status (:status resp)
+                               :body (subs b 0 (min 500 (count b)))})))))
+        (catch clojure.lang.ExceptionInfo e
+          (throw (ex-info (ex-message e)
+                          (-> (ex-data e)
+                              (dissoc :request)
+                              (assoc :s3-url url
+                                     :upload-bytes (alength ^bytes body))))))))))
+
+(defn- successful-controls
+  "Mirror a form the way the browser submits it: hidden and text inputs
+  verbatim; checkboxes and radios only when checked (an unchecked box
+  sends nothing); textareas by content; selects by selected option
+  (scalar for one, vector for several). Collapsing multi-value names
+  (host_ids[]) to a single value would silently unassign hosts — keep
+  every value. Takes the whole page plus the form id, not just the form
+  subtree: Rails renders some inputs (ignore_cover, ignore_chapters)
+  OUTSIDE the <form> element with an HTML5 form= attribute, and a subtree
+  scrape misses them — the missing params 500 the update.
+  Elements come from scoped selects (descendants by construction) plus
+  page-wide form= matches. Never value-equality against the subtree: all
+  five forms carry an identical _method hidden input, and an equality test
+  matches every copy page-wide (proven live: _method x5)."
+  [page form-id]
+  (let [[form] (hs/select (hs/id form-id) page)]
+    (when-not form
+      (throw (ex-info "Form not found on page" {:form-id form-id})))
+    (let [scoped (concat (hs/select (hs/tag :input) form)
+                         (hs/select (hs/tag :textarea) form)
+                         (hs/select (hs/tag :select) form))
+          ;; Identical element maps collapse in a set: two genuinely
+          ;; repeated hidden inputs with the same name AND value would send
+          ;; once instead of twice. The episode form has no such pair
+          ;; (repeated names always differ in value), so overlap-guard wins.
+          seen (into #{} scoped)
+          outside (filter (fn [el]
+                            (and (= form-id (get-in el [:attrs :form]))
+                                 (not (contains? seen el))))
+                          (concat (hs/select (hs/tag :input) page)
+                                  (hs/select (hs/tag :textarea) page)
+                                  (hs/select (hs/tag :select) page)
+                                  (hs/select (hs/tag :button) page)))
+          els (concat scoped outside)
+          keep-el? (fn [{:keys [tag attrs]}]
+                     (and (:name attrs)
+                          (or (not= :input tag)
+                              (let [t (:type attrs)]
+                                (or (nil? t)
+                                    (not (contains? #{"checkbox" "radio"} t))
+                                    (contains? attrs :checked))))))
+          value-of (fn [{:keys [tag attrs content]}]
+                     (case tag
+                       :textarea [(get attrs :name) (clojure.string/join "" content)]
+                       :select (let [picked (into []
+                                                  (comp (filter #(and (= :option (:tag %))
+                                                                      (contains? (:attrs %) :selected)))
+                                                        (map #(get-in % [:attrs :value])))
+                                                  content)]
+                                 [(get attrs :name)
+                                  (if (= 1 (count picked)) (first picked) picked)])
+                       [(get attrs :name) (get attrs :value)]))
+          add-pair (fn [m [k v]]
+                     (if (contains? m k)
+                       (update m k (fn [old] (vec (concat (if (sequential? old) old [old]) [v]))))
+                       (assoc m k v)))]
+      (transduce (comp (filter keep-el?) (map value-of)) (completing add-pair) {} els))))
+
+(defn stage-temp-url
+  "Build the mp3_upload_url value the browser sends: the S3 temp URL plus
+  a #filename=<name> fragment (the UI surfaces the original name on
+  reload; the stored S3 key is a UUID). Any pre-existing fragment is
+  stripped first — re-staging an already-staged URL must not stack
+  fragments. Blank stays blank (the delete path)."
+  [temp-url file-name]
+  (if (str/blank? temp-url)
+    ""
+    (str (str/replace (str temp-url) #"#.*$" "")
+         "#filename="
+         (str/replace (java.net.URLEncoder/encode (str file-name) "UTF-8")
+                      "+" "%20"))))
+
+(defn cookies-for
+  "Render the client's stored cookies for uri as a Cookie header value.
+  Needed because the episode PATCH goes out via curl (redirect-following
+  with the JDK client re-sends POST headers on the follow-up GET; curl
+  lets us not follow and verify with a clean GET instead), and curl needs
+  the session handed to it explicitly."
+  [client uri]
+  (let [mgr (.orElse (.cookieHandler ^java.net.http.HttpClient client) nil)]
+    (when-not mgr
+      (throw (ex-info "HTTP client has no cookie handler; cannot export session"
+                      {:uri (str uri)})))
+    (->> (.get (.getCookieStore ^java.net.CookieManager mgr)
+               (java.net.URI/create (str uri)))
+         (map (fn [c] (str (.getName ^java.net.HttpCookie c)
+                           "=" (.getValue ^java.net.HttpCookie c))))
+         (str/join "; "))))
+
+(defn curl-post-form!
+  "POST a multipart body with the curl binary and return
+  {:status :location :body}. Never follows redirects: blindly refollowing
+  a POST's 302 re-sends Content-Type/Content-Length/Origin on a bodiless
+  GET, which 500s (or hangs) — that follow-up failure is what all our
+  early 'attach 500s' were, while every write had actually applied. The
+  caller verifies the write with a clean GET instead."
+  [{:keys [url body content-type headers cookie timeout-s]}]
+  (let [body-file (java.io.File/createTempFile "fireside-attach" ".bin")
+        out-file (java.io.File/createTempFile "fireside-attach-resp" ".html")]
+    (try
+      (java.nio.file.Files/write (.toPath body-file) ^bytes body
+                                 ^"[Ljava.nio.file.OpenOption;" (into-array java.nio.file.OpenOption []))
+      (let [args (concat ["curl" "-s" "--http1.1"
+                          "--max-time" (str (or timeout-s 120))
+                          "-D" "-" "-o" (.getAbsolutePath out-file)
+                          "-w" "\n%{http_code}"
+                          "--data-binary" (str "@" (.getAbsolutePath body-file))
+                          "--header" (str "Content-Type: " content-type)]
+                         (mapcat (fn [[k v]] ["--header" (str k ": " v)]) headers)
+                         ["--header" (str "Cookie: " cookie) url])
+            {:keys [exit out err]} (apply shell/sh args)]
+        (when (not= 0 exit)
+          (throw (ex-info "curl failed to POST the episode form"
+                          {:exit exit :err err :url url})))
+        (let [lines (str/split-lines (str/trim out))
+              code (Integer/parseInt (str/trim (last lines)))
+              location (some-> (re-find #"(?im)^location:\s*(\S+)" out) second str/trim)
+              resp-body (slurp (.getAbsolutePath out-file))]
+          {:status code :location location :body resp-body}))
+      (finally
+        (.delete body-file)
+        (.delete out-file)))))
+
+(declare mp3-status poll-mp3-status)
+
+(def required-episode-keys
+  "Episode-form fields that must survive the scrape, or the POST is
+  refused. attach-mp3! mirrors the whole form to change one field; a bad
+  scrape would otherwise wipe title/status/publish schedule/hosts in the
+  same write that touches audio. Presence only — values may be blank."
+  #{"_method" "authenticity_token"
+    "episode[title]" "episode[description]" "episode[subtitle]"
+    "episode[status]" "episode[publish_at(1i)]" "episode[publish_at(2i)]"
+    "episode[publish_at(3i)]" "episode[publish_at(4i)]" "episode[publish_at(5i)]"
+    "episode[host_ids][]" "episode[guest_ids][]" "episode[mp3_upload_url]"})
+
+(defn attach-mp3!
+  "Point the episode at temp-url and submit. Re-reads the edit page fresh
+  (never submits a form parsed minutes ago), mirrors every successful
+  control on the episode form, replaces only episode[mp3_upload_url], and
+  posts MULTIPART like the browser does — urlencoded gets a 200 that saves
+  nothing processable. The temp URL carries a #filename=<name> fragment
+  exactly as the UI sends it; without it processing never starts. A blank
+  temp-url clears the field (the delete path), with no fragment.
+  Posts via curl and never follows the redirect: refollowing a POST's 302
+  re-sends Content-Type/Content-Length/Origin on a bodiless GET, which is
+  where every historical 'attach 500' came from — while the write had
+  already applied. Success is decided by re-reading the page and comparing
+  the stored mp3_upload_url to the staged value, never by status code."
+  [{:keys [client podcast episode-guid temp-url file-name previous-url]
+    :or {previous-url ::unset}}]
+  (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                            "episodes" episode-guid])
+        form-id (str "edit_episode_" episode-guid)
+        page (fetch-as-hickory {:http-client client :url (str base "/edit")})
+        staged (stage-temp-url temp-url file-name)
+        controls (successful-controls page form-id)
+        params (assoc controls
+                      "episode[mp3_upload_url]" staged
+                        ;; Mirror Ruby's .strip: the textarea scrape picks up
+                        ;; the HTML formatting newlines around the content.
+                      "episode[description]" (str/trim (str (get controls "episode[description]" "")))
+                      "episode[subtitle]" (str/trim (str (get controls "episode[subtitle]" "")))
+                      "button" "")
+        missing (remove #(contains? params %) required-episode-keys)
+        {:keys [body boundary]} (multipart-fields-bytes params)
+          ;; Via curl, not hato: only curl lets us not follow the redirect.
+        {post-status :status post-location :location post-text :body}
+        (curl-post-form!
+         {:url base :body body
+          :content-type (str "multipart/form-data; boundary=" boundary)
+          :cookie (cookies-for client base)
+          :headers {"Referer" (str base "/edit")
+                    "Origin" FIRESIDE-BASE-URL
+                    "User-Agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}})
+        resp-body (str post-text)]
+    (when (seq missing)
+      (throw (ex-info "Refusing to POST: episode form scrape missed required fields"
+                      {:episode-guid episode-guid :missing (vec missing)})))
+    (when (and post-location (re-find #"/login(\?.*)?$" post-location))
+      (throw (ex-info "Session expired during mp3 attach: nothing was written"
+                      {:episode-guid episode-guid :landed-on post-location})))
+    (when (not (<= 200 post-status 399))
+      (throw (ex-info "Failed to attach mp3"
+                      {:status post-status :episode-guid episode-guid
+                       :location post-location
+                       :field-names (sort (keys params))
+                       :field-count (count params)
+                       :body-bytes (alength ^bytes body)
+                       :response-snippet (subs resp-body 0 (min 2000 (count resp-body)))})))
+      ;; The 302 only means Rails accepted the POST. Confirm the write landed
+      ;; with clean GETs, retrying: reads can race the commit across
+      ;; Fireside's backends (proven live — the staged URL appeared on the
+      ;; page after an immediate re-read missed it). Success is the staged
+      ;; value present, OR the field consumed (blank) with processing
+      ;; actually underway or done — Fireside clears the temp field once it
+      ;; takes the file, which once false-failed a verification mid-run.
+    (loop [attempt 1]
+      (let [fresh (fetch-as-hickory {:http-client client :url (str base "/edit")})
+            stored (get (successful-controls fresh form-id) "episode[mp3_upload_url]" ::missing)]
+        (cond
+          (= (str stored) staged) true
+          (and (str/blank? (str stored))
+               (not (str/blank? staged))
+               (let [st (try (mp3-status {:client client :podcast podcast
+                                          :episode-guid episode-guid})
+                             (catch Exception _ nil))]
+                 ;; A stale :url (previous pass's audio) must not count:
+                 ;; only processing=true, or a url newer than the one we
+                 ;; saw before attaching, proves OUR file was taken.
+                 (and st (or (:processing st)
+                             (and (:url st)
+                                  (not= ::unset previous-url)
+                                  (not= (:url st) previous-url))))))
+          true
+          (>= attempt 12)
+          (throw (ex-info "Attach POST answered but the staged URL never appeared on the page"
+                          {:status post-status :episode-guid episode-guid
+                           :staged staged :stored stored}))
+          :else (do (Thread/sleep 5000)
+                    (recur (inc attempt))))))))
+
+(defn mp3-status
+  "Read check_mp3_status. Returns {:processing bool :url :download-url}."
+  [{:keys [client podcast episode-guid]}]
+  (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                           "episodes" episode-guid "check_mp3_status"])
+        m (json/read-str (fetch-page! client url "mp3 status"))]
+    {:processing (boolean (get m "processing")) :url (get m "url") :download-url (get m "download_url") :error (boolean (get m "error")) :error-message (get m "error_message")}))
+
+(defn delete-mp3!
+  "Remove the episode audio. The legacy delete_mp3 route is gone (404s and
+  the UI offers no remove button), so deletion means clearing
+  episode[mp3_upload_url] through the normal multipart form and
+  submitting. Waits afterwards until the bytes url actually clears: the
+  clear can race a settling transcode, so one status read cannot prove
+  deletion, and a stale url on the first read must not fail the run."
+  [{:keys [client podcast episode-guid]}]
+  (let [legacy (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                              "episodes" episode-guid "delete_mp3"])
+        resp (http/request {:method :get :url legacy :http-client client
+                            :throw-exceptions false})
+        args {:client client :podcast podcast :episode-guid episode-guid}]
+    (when (not= 404 (:status resp))
+      (println "  note: legacy delete_mp3 answered" (:status resp) "- route may be back"))
+    (attach-mp3! {:client client :podcast podcast :episode-guid episode-guid
+                  :temp-url "" :file-name "empty.mp3"})
+    (let [deadline (+ (System/currentTimeMillis) 120000)]
+      (loop [n 1]
+        (let [st (mp3-status args)]
+          (println (format "  mp3 clear poll %d: processing=%s url=%s" n (:processing st) (boolean (:url st))))
+          (cond
+            (:error st)
+            (throw (ex-info "mp3 status reports failure after delete"
+                            {:episode-guid episode-guid
+                             :error-message (:error-message st)
+                             :status st}))
+            (nil? (:url st)) true
+            (> (System/currentTimeMillis) deadline)
+            (throw (ex-info "clearing mp3_upload_url did not take effect"
+                            {:episode-guid episode-guid :status st}))
+            :else (do (Thread/sleep 5000)
+                      (recur (inc n)))))))))
+
+(defn poll-mp3-status
+  "Poll check_mp3_status until processing clears or the deadline passes.
+  Logs every poll so the first runs calibrate real processing durations."
+  [{:keys [episode-guid] :as args}
+   & {:keys [interval-ms deadline-ms]
+      :or {interval-ms 10000 deadline-ms 3600000}}]
+  (let [deadline (+ (System/currentTimeMillis) (long deadline-ms))]
+    (loop [n 1]
+      (let [st (mp3-status args)]
+        (println (format "  mp3 poll %d: processing=%s" n (:processing st)))
+        (when (:error st)
+          (throw (ex-info "mp3 processing failed"
+                          {:episode-guid episode-guid
+                           :error-message (:error-message st)
+                           :status st})))
+        (if (:processing st)
+          (do (when (> (System/currentTimeMillis) deadline)
+                (throw (ex-info "Timed out waiting for mp3 processing"
+                                {:episode-guid episode-guid :deadline-ms deadline-ms})))
+              (Thread/sleep (long interval-ms))
+              (recur (inc n)))
+          st)))))
+
+(defn await-processed
+  "Poll check_mp3_status until a bytes url appears, processing fails, or
+  the deadline passes. Unlike poll-mp3-status (which returns on the first
+  processing=false, including 'job not started yet'), this only returns
+  success once (:url st) is present. Logs every poll."
+  [{:keys [episode-guid] :as args}
+   & {:keys [interval-ms deadline-ms]
+      :or {interval-ms 10000 deadline-ms 3600000}}]
+  (let [deadline (+ (System/currentTimeMillis) (long deadline-ms))]
+    (loop [n 1]
+      (let [st (mp3-status args)]
+        (println (format "  mp3 await %d: processing=%s url=%s" n (:processing st) (boolean (:url st))))
+        (cond
+          (:error st)
+          (throw (ex-info "mp3 processing failed"
+                          {:episode-guid episode-guid
+                           :error-message (:error-message st)
+                           :status st}))
+          (:url st) st
+          (> (System/currentTimeMillis) deadline)
+          (throw (ex-info "Timed out waiting for processed mp3 url"
+                          {:episode-guid episode-guid :deadline-ms deadline-ms :status st}))
+          :else (do (Thread/sleep (long interval-ms))
+                    (recur (inc n))))))))
+
+(defn parse-ffprobe-chapters
+  "Parse ffprobe -show_chapters -print_format flat output into
+  [{:start Double :title String}] ordered by chapter index."
+  [flat-output]
+  (let [starts (into {} (map (fn [[_ n v]] [(Integer/parseInt n) (Double/parseDouble v)])
+                             (re-seq #"chapters\.chapter\.(\d+)\.start_time=\"([^\"]*)\"" flat-output)))
+        titles (into {} (map (fn [[_ n v]] [(Integer/parseInt n) v])
+                             (re-seq #"chapters\.chapter\.(\d+)\.tags\.title=\"([^\"]*)\"" flat-output)))]
+    (mapv (fn [n] {:start (get starts n) :title (get titles n)})
+          (sort (keys starts)))))
+
+(defn compare-chapters
+  "Check embedded chapters against the expected CSV rows. Compares count,
+  then per-chapter trimmed-title exact match plus start within tolerance-s
+  (default 2.0: LAME encoder delay plus Fireside's transcode shift starts,
+  so exact float equality would false-red). End times are not compared;
+  Fireside derives them. Returns true or throws with the deltas."
+  [expected actual & {:keys [tolerance-s] :or {tolerance-s 2.0}}]
+  (let [exp (mapv (fn [{:keys [name position-seconds]}]
+                    {:title (str/trim (str name)) :start (double position-seconds)})
+                  expected)]
+    (when (not= (count exp) (count actual))
+      (throw (ex-info "Chapter count mismatch"
+                      {:expected (count exp) :actual (count actual)
+                       :expected-titles (mapv :title exp)
+                       :actual-titles (mapv :title actual)})))
+    (doseq [[e a] (map vector exp actual)]
+      (when (not= (:title e) (str/trim (str (:title a))))
+        (throw (ex-info "Chapter title mismatch"
+                        {:expected (:title e) :actual (:title a)})))
+      (when (> (Math/abs (- (:start e) (double (:start a)))) tolerance-s)
+        (throw (ex-info "Chapter start drifted past tolerance"
+                        {:title (:title e)
+                         :expected-start (:start e)
+                         :actual-start (:start a)
+                         :tolerance-s tolerance-s}))))
+    true))
+
+(defn ffprobe-chapters
+  "Run ffprobe over mp3-path and return [{:start :title}]."
+  [mp3-path]
+  (let [{:keys [exit out err]} (shell/sh
+                                "ffprobe" "-v" "error"
+                                "-show_chapters" "-print_format" "flat"
+                                (str mp3-path))]
+    (when (not= 0 exit)
+      (throw (ex-info "ffprobe failed" {:file (str mp3-path) :err err})))
+    (parse-ffprobe-chapters out)))
+
+(defn download-mp3!
+  "Download url to dest-path. Used to fetch the processed file back for
+  chapter verification (from the status url key, which is the bytes URL)."
+  [url dest-path]
+  (let [resp (http/request {:method :get :url url :as :byte-array :throw-exceptions false})]
+    (when (not= 200 (:status resp))
+      (throw (ex-info "Could not download processed mp3"
+                      {:url url :status (:status resp)})))
+    (clojure.java.io/copy (:body resp) (clojure.java.io/file (str dest-path)))
+    (str dest-path)))
+
+(defn upload-mp3
+  "Single pass: S3 upload, attach, wait till a bytes url exists. Returns
+  the final status map (always with :url, or throws). Expects the file to
+  exist; expects chapters to already be on the episode (embedded chapters
+  come from Fireside's records at processing time, so sync-chapters must
+  run first). Callers may pass :previous-url (the status url seen before
+  this pass); it lets attach verification tell our fresh audio apart from
+  stale bytes. Without it, attach snapshots the status itself."
+  [{:keys [client podcast episode-guid mp3-path previous-url] :as args}]
+  (println "Reading S3 presign...")
+  (let [{:keys [url fields]} (s3-upload-form args)]
+    (println "Uploading to S3...")
+    (let [temp-url (post-file-to-s3! {:url url :fields fields :file mp3-path})
+          known-url (if (contains? args :previous-url)
+                      previous-url
+                      (try (:url (mp3-status args))
+                           (catch Exception _ ::unset)))]
+      (println "Attaching to episode...")
+      (attach-mp3! {:client client :podcast podcast
+                    :episode-guid episode-guid :temp-url temp-url
+                    :file-name (.getName (clojure.java.io/file (str mp3-path)))
+                    :previous-url known-url})
+      (println "Waiting for processing...")
+      (await-processed args))))
+
+(defn episode-lock-file
+  "Path of the mutual-exclusion lock for one episode's audio flow."
+  [episode-guid]
+  (clojure.java.io/file (str "/tmp/opencode/episode-" episode-guid ".lock")))
+
+(defn acquire-episode-lock!
+  "Claim the episode lock or throw. Two concurrent twice-runs interleave
+  S3 keys, temp urls and polls and verify each other's bytes, so the
+  second run must refuse to start. A stale lock names its age so the
+  operator can remove it by hand (never auto-stolen). Returns the lock
+  file for release-episode-lock!."
+  [episode-guid]
+  (let [f (episode-lock-file episode-guid)]
+    (.mkdirs (.getParentFile f))
+    (if (.createNewFile f)
+      (do (spit (.getPath f)
+                (str "pid=" (.getName (java.lang.management.ManagementFactory/getRuntimeMXBean))
+                     " since=" (str (java.time.Instant/now)) "\n"))
+          f)
+      (let [age-s (quot (- (System/currentTimeMillis) (.lastModified f)) 1000)]
+        (throw (ex-info "episode audio flow is already running elsewhere; refusing to start"
+                        {:episode-guid episode-guid
+                         :lock (.getPath f)
+                         :lock-age-seconds age-s
+                         :hint "remove the lock file once no run is active"}))))))
+
+(defn release-episode-lock!
+  "Release a lock claimed by acquire-episode-lock!. Never throws."
+  [lock-file]
+  (try (.delete ^java.io.File lock-file)
+       (catch Exception _ nil))
+  nil)
+
+(defn current-temp-url
+  "Read the episode's staged mp3_upload_url, or nil when unset. Used to
+  remember pre-run audio for rollback. Never throws: unknown reads as nil."
+  [{:keys [client podcast episode-guid]}]
+  (try
+    (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                              "episodes" episode-guid])
+          page (fetch-as-hickory {:http-client client :url (str base "/edit")})
+          v (get (successful-controls page (str "edit_episode_" episode-guid))
+                 "episode[mp3_upload_url]")]
+      (when-not (str/blank? (str v)) (str v)))
+    (catch Exception _ nil)))
+
+(defn upload-mp3-twice
+  "Full flow: upload, wait, delete (verified), upload again, wait, then
+  download the processed file and verify its embedded chapters exactly
+  against chapters-file. Refetches the edit page before the second upload
+  (never submits a stale presign or token). Holds the episode lock for the
+  whole run; on any failure after the delete, best-effort restores the
+  pre-run temp url before rethrowing, so the episode is never left
+  deliberately silent. Returns {:status :report}."
+  [{:keys [client podcast episode-guid mp3-path chapters-file]}]
+  (let [expected (load-chapters-csv chapters-file)
+        args {:client client :podcast podcast :episode-guid episode-guid}
+        lock (acquire-episode-lock! episode-guid)
+        fallback (current-temp-url args)]
+    (try
+      (println "Pass 1/2...")
+      (let [pass1 (upload-mp3 (assoc args :mp3-path mp3-path))]
+        (when-not (:url pass1)
+          (throw (ex-info "Pass 1 produced no bytes url; refusing to delete good audio"
+                          {:status pass1})))
+        (println "Deleting...")
+        (try
+          (delete-mp3! args)
+          (println "Pass 2/2 (fresh presign)...")
+          (let [final (upload-mp3 (assoc args :mp3-path mp3-path
+                                         :previous-url (:url pass1)))
+                tmp (java.io.File/createTempFile "fireside-verify-" ".mp3")]
+            (try
+              (println "Downloading processed file for verification...")
+              (download-mp3! (:url final) (.getAbsolutePath tmp))
+              (println "Comparing embedded chapters...")
+              (compare-chapters expected (ffprobe-chapters (.getAbsolutePath tmp)))
+              (println "Chapters verified exactly.")
+              {:status final
+               :report {:chapters (count expected) :verified true}}
+              (finally (.delete tmp))))
+          (catch Throwable t
+            (when fallback
+              (println "Attempting rollback to pre-run audio...")
+              (try
+                (attach-mp3! {:client client :podcast podcast :episode-guid episode-guid
+                              :temp-url fallback :file-name "rollback.mp3"})
+                (println "Rollback staged the pre-run temp url.")
+                (catch Exception r
+                  (println "Rollback failed:" (ex-message r)))))
+            (throw t))))
+      (finally
+        (release-episode-lock! lock)))))
 
 (comment
 

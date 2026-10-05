@@ -4,6 +4,7 @@
    is what needs exercising against a real Fireside, not these."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
+            [hato.client :as http]
             [noblepayne.fireside :as f]))
 
 ;; ------------------------------------------- pre-existing regressions
@@ -386,3 +387,163 @@
     (is (= "00:01:01" (:start-timecode row)))
     (is (= 61.66 (:start-seconds row)))
     (is (= "1m 1s" (f/timecode->words (:start-timecode row))))))
+
+(deftest rewrite-s3-key-test
+  (testing "replaces the trailing segment with a fresh uuid.mp3"
+    (let [k1 (f/rewrite-s3-key "episodes/abc/${filename}")
+          k2 (f/rewrite-s3-key "episodes/abc/${filename}")]
+      (is (re-find #"^episodes/abc/[0-9a-f-]{36}\.mp3$" k1))
+      (is (not= k1 k2) "fresh uuid per upload")))
+
+  (testing "pop-append semantics: whatever the tail is, it goes"
+    (is (re-find #"^a/b/[0-9a-f-]{36}\.mp3$"
+                 (f/rewrite-s3-key "a/b/oldname.mp3")))))
+
+(deftest parse-ffprobe-chapters-test
+  (let [flat (str "chapters.chapter.0.start_time=\"0.000000\"\n"
+                  "chapters.chapter.0.tags.title=\"Intro\"\n"
+                  "chapters.chapter.1.start_time=\"90.110000\"\n"
+                  "chapters.chapter.1.tags.title=\"KDE Week\"\n")]
+    (testing "parses starts and titles by index"
+      (is (= [{:start 0.0 :title "Intro"}
+              {:start 90.11 :title "KDE Week"}]
+             (f/parse-ffprobe-chapters flat))))
+
+    (testing "empty output parses to empty"
+      (is (= [] (f/parse-ffprobe-chapters ""))))))
+
+(deftest compare-chapters-test
+  (let [expected [{:name "Intro" :position-seconds 0.0}
+                  {:name "KDE Week" :position-seconds 90.11}]]
+    (testing "passes on title match plus starts within tolerance"
+      ;; 50ms of encoder delay must not fail the check
+      (is (true? (f/compare-chapters
+                  expected
+                  [{:title "Intro" :start 0.05}
+                   {:title "KDE Week" :start 90.2}]))))
+
+    (testing "count mismatch throws with both title lists"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"count"
+                            (f/compare-chapters expected
+                                                [{:title "Intro" :start 0.0}]))))
+
+    (testing "title mismatch throws"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"title"
+                            (f/compare-chapters
+                             expected
+                             [{:title "Intro" :start 0.0}
+                              {:title "Wrong" :start 90.11}]))))
+
+    (testing "start drift past tolerance throws with deltas"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"drift"
+                            (f/compare-chapters
+                             expected
+                             [{:title "Intro" :start 0.0}
+                              {:title "KDE Week" :start 99.0}]))))))
+
+(deftest multipart-bytes-order-test
+  (testing "Content-Type field travels before the file part, file last"
+    ;; Regression guard: S3 ignores every field after the file part, so a
+    ;; trailing Content-Type fails the policy with a 403 even though the
+    ;; bytes are present. Proven live: ct-last 403s, ct-first 201s.
+    (let [s (String. ^bytes (:body (f/multipart-bytes
+                                    {"key" "ep/x.mp3" "policy" "abc"}
+                                    "x.mp3" (.getBytes "DATA"))))]
+      (is (< (.indexOf s "name=\"key\"") (.indexOf s "name=\"Content-Type\"")))
+      (is (< (.indexOf s "name=\"Content-Type\"") (.indexOf s "name=\"file\"")))
+      (is (re-find #"name=\"file\"; filename=\"x\.mp3\"" s))
+      (is (re-find #"audio/mp3\r\n" s))))
+
+  (testing "a presign-supplied Content-Type wins over the hardcoded one"
+    (let [s (String. ^bytes (:body (f/multipart-bytes
+                                    {"key" "k" "Content-Type" "video/mp4"}
+                                    "x.mp4" (.getBytes "D"))))]
+      (is (= 1 (count (re-seq #"name=\"Content-Type\"" s))))
+      (is (re-find #"video/mp4\r\n" s))
+      (is (not (re-find #"audio/mp3" s))))))
+
+(deftest successful-controls-test
+  (let [sc (fn [form] ((deref (resolve 'noblepayne.fireside/successful-controls)) {:tag :root :content [(assoc-in form [:attrs :id] "f")]} "f"))
+        form {:tag :form
+              :attrs {}
+              :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "TOK"} :content nil}
+                        {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"} :content nil}
+                        {:tag :input :attrs {:type "checkbox" :name "episode[host_ids][]" :value "1" :checked "checked"} :content nil}
+                        {:tag :input :attrs {:type "checkbox" :name "episode[host_ids][]" :value "2"} :content nil}
+                        {:tag :input :attrs {:type "radio" :name "episode[itunes_episode_type]" :value "full" :checked "checked"} :content nil}
+                        {:tag :input :attrs {:type "radio" :name "episode[itunes_episode_type]" :value "bonus"} :content nil}
+                        {:tag :textarea :attrs {:name "episode[description]"} :content ["Desc"]}
+                        {:tag :select :attrs {:name "episode[status]"}
+                         :content [{:tag :option :attrs {:value "0"}} {:tag :option :attrs {:value "1" :selected "selected"}}]}]}]
+    (testing "keeps hidden, text, checked boxes, textarea content, selected options"
+      (let [m (sc form)]
+        (is (= "TOK" (get m "authenticity_token")))
+        (is (= "T" (get m "episode[title]")))
+        (is (= "1" (get m "episode[host_ids][]")))
+        (is (= "full" (get m "episode[itunes_episode_type]")))
+        (is (= "Desc" (get m "episode[description]")))
+        (is (= "1" (get m "episode[status]")))))
+
+    (testing "drops unchecked boxes and unselected options"
+      (let [m (sc form)]
+        (is (= "1" (get m "episode[host_ids][]")))))
+    (testing "multi-value names accumulate into vectors"
+      (let [m (sc {:tag :form
+                   :attrs {}
+                   :content [{:tag :input :attrs {:type "checkbox" :name "h" :value "1" :checked "checked"}}
+                             {:tag :input :attrs {:type "checkbox" :name "h" :value "2" :checked "checked"}}]})]
+        (is (= ["1" "2"] (get m "h")))))
+    (testing "inputs outside the form element with a matching form= attribute are included"
+      ;; Regression guard: Rails renders ignore_cover/ignore_chapters
+      ;; outside the <form> with form=<id>. A subtree-only scrape misses
+      ;; them and the update 500s.
+      (let [sc2 (fn [page id] ((deref (resolve 'noblepayne.fireside/successful-controls)) page id))
+            page {:tag :root
+                  :content [{:tag :form
+                             :attrs {:id "f"}
+                             :content [{:tag :input :attrs {:type "hidden" :name "a" :value "1"}}]}
+                            {:tag :input :attrs {:type "hidden" :name "episode[ignore_cover]" :value "0" :form "f"}}]}]
+        (is (= {"a" "1" "episode[ignore_cover]" "0"} (sc2 page "f")))))))
+
+(deftest multipart-fields-bytes-test
+  (testing "encodes fields with repeated parts for multi-values"
+    (let [{:keys [body boundary]} (f/multipart-fields-bytes
+                                   {"a" "1" "h" ["x" "y"]})
+          s (String. ^bytes body)]
+      (is (re-find #"name=\"a\"\r\n\r\n1\r\n" s))
+      (is (= 2 (count (re-seq #"name=\"h\"\r\n" s))))
+      (is (re-find (re-pattern (str "--" boundary "--\r\n")) s)))))
+
+(deftest stage-temp-url-test
+  (testing "appends the filename fragment"
+    (is (= "https://x/y.mp3#filename=a%20b.mp3"
+           (f/stage-temp-url "https://x/y.mp3" "a b.mp3"))))
+  (testing "strips a pre-existing fragment instead of stacking"
+    (is (= "https://x/y.mp3#filename=new.mp3"
+           (f/stage-temp-url "https://x/y.mp3#filename=old.mp3" "new.mp3"))))
+  (testing "blank stays blank"
+    (is (= "" (f/stage-temp-url "" "x.mp3")))
+    (is (= "" (f/stage-temp-url nil "x.mp3")))))
+
+(deftest cookies-for-test
+  (testing "renders stored cookies as a Cookie header value"
+    (let [c (http/build-http-client {:cookie-policy :all})
+          mgr (.orElse (.cookieHandler ^java.net.http.HttpClient c) nil)
+          store (.getCookieStore ^java.net.CookieManager mgr)
+          uri (java.net.URI/create "https://app.fireside.fm/x")]
+      (.add store uri (java.net.HttpCookie. "u" "abc123"))
+      (.add store uri (java.net.HttpCookie. "_blackbird_session" "def456"))
+      (let [h (f/cookies-for c "https://app.fireside.fm/podcasts/p/episodes/g/edit")]
+        (is (re-find #"u=abc123" h))
+        (is (re-find #"_blackbird_session=def456" h))
+        (is (re-find #"; " h))))))
+
+(deftest temp-file-url-test
+  (testing "builds the browser-shaped URL with raw slashes"
+    (is (= "https://s3.amazonaws.com/temp.fireside.fm/uploads/abc/def.mp3"
+           (f/temp-file-url "https://s3.amazonaws.com/temp.fireside.fm" "uploads/abc/def.mp3"))))
+  (testing "tolerates a trailing slash on the endpoint"
+    (is (= "https://s3.amazonaws.com/temp.fireside.fm/uploads/abc/def.mp3"
+           (f/temp-file-url "https://s3.amazonaws.com/temp.fireside.fm/" "uploads/abc/def.mp3"))))
+  (testing "never percent-encodes the key"
+    (is (not (re-find #"%" (f/temp-file-url "https://e" "uploads/a/b.mp3"))))))
