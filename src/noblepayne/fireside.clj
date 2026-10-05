@@ -76,8 +76,13 @@
                            "link[title]" title
                            "link[url]" url
                            "link[excerpt]" quote)]
-    (http/post form-action {:http-client client
-                            :form-params form-params})
+    (let [resp (http/post form-action {:http-client client
+                                       :throw-exceptions false
+                                       :form-params form-params})]
+      (when (not (<= 200 (:status resp) 399))
+        (throw (ex-info "Failed to add link"
+                        {:status (:status resp) :episode-guid episode-guid
+                         :title title :url url}))))
     true))
 
 (defn delete-link [{:keys [client podcast episode-guid link-guid]}]
@@ -92,11 +97,17 @@
                                                        (hs/attr :name #{"csrf-token"}))
                                                links-url-page)]
                      (-> meta-tag :attrs :content))]
-    (http/request {:method :post
-                   :url delete-url
-                   :http-client client
-                   :form-params {"_method" "delete"
-                                 "authenticity_token" auth-token}})))
+    (let [resp (http/request {:method :post
+                                :url delete-url
+                                :http-client client
+                                :throw-exceptions false
+                                :form-params {"_method" "delete"
+                                              "authenticity_token" auth-token}})]
+      (when (not (<= 200 (:status resp) 399))
+        (throw (ex-info "Failed to delete link"
+                        {:status (:status resp) :episode-guid episode-guid
+                         :link-guid link-guid}))))
+      true))
 
 (defn purge-links [{:keys [client podcast episode-guid] :as args}]
   (let [links-url (str/join "/" [FIRESIDE-BASE-URL
