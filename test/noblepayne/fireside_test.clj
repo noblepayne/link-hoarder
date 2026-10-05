@@ -547,3 +547,15 @@
            (f/temp-file-url "https://s3.amazonaws.com/temp.fireside.fm/" "uploads/abc/def.mp3"))))
   (testing "never percent-encodes the key"
     (is (not (re-find #"%" (f/temp-file-url "https://e" "uploads/a/b.mp3"))))))
+
+(deftest required-episode-keys-test
+  (testing "host/guest arrays are not required: roster-less podcasts render zero such inputs"
+    ;; Regression guard: the adfree episode form carries no host_ids[] or
+    ;; guest_ids[] inputs at all, and requiring them refused every POST.
+    (is (not (contains? f/required-episode-keys "episode[host_ids][]")))
+    (is (not (contains? f/required-episode-keys "episode[guest_ids][]"))))
+  (testing "title/status/publish schedule always required"
+    (is (every? #(contains? f/required-episode-keys %)
+                ["episode[title]" "episode[status]"
+                 "episode[publish_at(1i)]" "episode[publish_at(5i)]"
+                 "episode[mp3_upload_url]"]))))

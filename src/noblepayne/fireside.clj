@@ -955,11 +955,16 @@
   refused. attach-mp3! mirrors the whole form to change one field; a bad
   scrape would otherwise wipe title/status/publish schedule/hosts in the
   same write that touches audio. Presence only — values may be blank."
+  ;; Note: episode[host_ids][] / episode[guest_ids][] are deliberately NOT
+  ;; here. Podcasts with no people roster (e.g. adfree) render zero such
+  ;; inputs, so absence is correct and must not refuse the POST. When the
+  ;; inputs exist they are mirrored verbatim (checked-only, multi-values
+  ;; accumulated — the browser behavior), which the unit tests pin down.
   #{"_method" "authenticity_token"
     "episode[title]" "episode[description]" "episode[subtitle]"
     "episode[status]" "episode[publish_at(1i)]" "episode[publish_at(2i)]"
     "episode[publish_at(3i)]" "episode[publish_at(4i)]" "episode[publish_at(5i)]"
-    "episode[host_ids][]" "episode[guest_ids][]" "episode[mp3_upload_url]"})
+    "episode[mp3_upload_url]"})
 
 (defn attach-mp3!
   "Point the episode at temp-url and submit. Re-reads the edit page fresh
