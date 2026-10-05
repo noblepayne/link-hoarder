@@ -136,6 +136,20 @@
       (println "Deleting" link-guid)
       (delete-link (assoc args :link-guid link-guid)))))
 
+(defn fetch-link-count
+  "Count data rows on the episode's /links page. Scripted replacement
+  for opening the page and counting: assert this equals the scrape count
+  after every purge + add run."
+  [{:keys [client podcast episode-guid]}]
+  (let [links-url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                                 "episodes" episode-guid
+                                 "links"])
+        links-url-page (fetch-as-hickory {:http-client client
+                                          :url links-url})]
+    (count (hs/select (hs/and (hs/tag :tr)
+                              (hs/attr :id))
+                      links-url-page))))
+
 (defn add-chapter [{:keys [client podcast episode-guid timecode note]}]
   (let [new-url (str/join "/" [FIRESIDE-BASE-URL
                                "podcasts" podcast
@@ -708,6 +722,13 @@
   (let [parts (str/split s3-key #"/")]
     (str/join "/" (conj (vec (butlast parts)) (str (random-uuid) ".mp3")))))
 
+(defn- utf8-bytes
+  "Platform-independent byte encoding for multipart bodies. Values are
+  ASCII presign data and episode text today; the point is the encoding
+  never depends on JVM file.encoding."
+  ^bytes [^String s]
+  (.getBytes s java.nio.charset.StandardCharsets/UTF_8))
+
 (defn multipart-bytes
   "Build a multipart/form-data body as a byte array with a known length.
   Needed because hato's multipart always streams chunked (no
@@ -720,7 +741,7 @@
   [fields file-name file-bytes]
   (let [boundary (str "------------------------" (random-uuid))
         out (java.io.ByteArrayOutputStream.)
-        write-str (fn [s] (.write out (.getBytes (str s))))
+        write-str (fn [s] (.write out (utf8-bytes (str s))))
         write-bytes (fn [b] (.write out ^bytes b))
         ;; The policy demands a Content-Type field. If the presign ever
         ;; starts including one, prefer it over the hardcoded value rather
@@ -735,18 +756,19 @@
       (write-str (str "--" boundary "\r\n"))
       (write-str (str "Content-Disposition: form-data; name=\"" k "\"\r\n"))
       (write-str "\r\n")
-      (write-bytes (.getBytes (str v)))
-      (write-bytes (.getBytes "\r\n")))
+      (write-bytes (utf8-bytes (str v)))
+      (write-bytes (utf8-bytes "\r\n")))
     (write-str (str "--" boundary "\r\n"))
     (write-str (str "Content-Disposition: form-data; name=\"file\"; filename=\"" file-name "\"\r\n"))
     (write-str "Content-Type: application/octet-stream\r\n")
     (write-str "\r\n")
     (write-bytes file-bytes)
-    (write-bytes (.getBytes "\r\n"))
+    (write-bytes (utf8-bytes "\r\n"))
     (write-str (str "--" boundary "--\r\n"))
-    {:body (.toByteArray out)
-     :boundary boundary
-     :content-length (alength (.toByteArray out))}))
+    (let [bytes (.toByteArray out)]
+      {:body bytes
+       :boundary boundary
+       :content-length (alength ^bytes bytes)})))
 
 (defn multipart-fields-bytes
   "Build a fields-only multipart/form-data body with a known length.
@@ -755,7 +777,7 @@
   [fields]
   (let [boundary (str "------------------------" (random-uuid))
         out (java.io.ByteArrayOutputStream.)
-        write-str (fn [s] (.write out (.getBytes (str s))))
+        write-str (fn [s] (.write out (utf8-bytes (str s))))
         parts (mapcat (fn [[k v]]
                         (if (sequential? v)
                           (map (fn [x] [k x]) v)
@@ -804,7 +826,10 @@
       ;; body, which sends clojure.main's error printer into a ten-minute
       ;; pprint spiral. Catch and rethrow with the body summarized.
       (try
+        ;; 10-minute total cap: the shared client sets only a connect
+        ;; timeout, and a stalled 70 MB upload must fail fast, not hang.
         (let [resp (http/post url {:body body
+                                   :timeout 600000
                                    :headers {"Content-Type"
                                              (str "multipart/form-data; boundary=" boundary)}})]
           (cond
@@ -872,21 +897,31 @@
           els (concat scoped outside)
           keep-el? (fn [{:keys [tag attrs]}]
                      (and (:name attrs)
+                          ;; Disabled controls are never successful, and file
+                          ;; inputs upload direct-to-S3 — an empty file part
+                          ;; is exactly the kind of thing that 500s an update.
+                          (not (contains? attrs :disabled))
                           (or (not= :input tag)
                               (let [t (:type attrs)]
-                                (or (nil? t)
-                                    (not (contains? #{"checkbox" "radio"} t))
-                                    (contains? attrs :checked))))))
+                                (and (not= "file" t)
+                                     (or (nil? t)
+                                         (not (contains? #{"checkbox" "radio"} t))
+                                         (contains? attrs :checked)))))))
           value-of (fn [{:keys [tag attrs content]}]
                      (case tag
                        :textarea [(get attrs :name) (clojure.string/join "" content)]
-                       :select (let [picked (into []
-                                                  (comp (filter #(and (= :option (:tag %))
-                                                                      (contains? (:attrs %) :selected)))
+                       :select (let [options (filterv #(= :option (:tag %)) content)
+                                     picked (into []
+                                                  (comp (filter #(contains? (:attrs %) :selected))
                                                         (map #(get-in % [:attrs :value])))
-                                                  content)]
+                                                  options)]
                                  [(get attrs :name)
-                                  (if (= 1 (count picked)) (first picked) picked)])
+                                  (cond (= 1 (count picked)) (first picked)
+                                        ;; No selected option: the browser
+                                        ;; submits the first, not nothing.
+                                        (and (empty? picked) (seq options))
+                                        (get-in (first options) [:attrs :value])
+                                        :else picked)])
                        [(get attrs :name) (get attrs :value)]))
           add-pair (fn [m [k v]]
                      (if (contains? m k)
@@ -1123,8 +1158,7 @@
                       (recur (inc attempt)))))))))
 
 (def episode-status-values
-  "Visibility keyword -> episode[status] form value. 687 and adfree-687
-  both sit at Private until someone says otherwise."
+  "Visibility keyword -> episode[status] form value."
   {:public "1" :private "0" :unlisted "2"})
 
 (defn schedule-episode!
@@ -1141,8 +1175,18 @@
       (throw (ex-info "Unknown visibility status"
                       {:status status :known (vec (keys episode-status-values))})))
     (let [[y mo d h mi] publish-at]
+      (when-not (and (sequential? publish-at) (= 5 (count publish-at))
+                     (every? integer? [y mo d h mi]))
+        (throw (ex-info "publish-at must be [year month day hour minute] integers"
+                        {:publish-at publish-at})))
+      (when-not (and (<= 2000 y) (<= y 2100)
+                     (<= 1 mo) (<= mo 12)
+                     (<= 1 d) (<= d 31)
+                     (<= 0 h) (<= h 23))
+        (throw (ex-info "publish-at out of range"
+                        {:publish-at publish-at})))
       (when-not (contains? #{0 15 30 45} mi)
-        (throw (ex-info "Publish minute must be a 15-minute step"
+        (throw (ex-info "Publish minute must be a 15-minute step (the form offers only 00/15/30/45)"
                         {:minute mi})))
       (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
                                 "episodes" episode-guid])
@@ -1166,7 +1210,10 @@
         true))))
 
 (defn mp3-status
-  "Read check_mp3_status. Returns {:processing bool :url :download-url}."
+  "Read check_mp3_status. Returns {:processing bool :url :download-url
+  :error bool :error-message (or nil)}. A failed transcode reads
+  {:processing false :error true} with the CarrierWave reason — never
+  treat a nil :url alone as success."
   [{:keys [client podcast episode-guid]}]
   (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
                            "episodes" episode-guid "check_mp3_status"])
@@ -1187,7 +1234,7 @@
   poll."
   [{:keys [episode-guid] :as args}
    & {:keys [interval-ms deadline-ms]
-      :or {interval-ms 10000 deadline-ms 3600000}}]
+      :or {interval-ms 10000 deadline-ms 1200000}}]
   (let [deadline (+ (System/currentTimeMillis) (long deadline-ms))]
     (loop [n 1]
       (let [st (mp3-status args)]
@@ -1258,7 +1305,7 @@
   "Download url to dest-path. Used to fetch the processed file back for
   chapter verification (from the status url key, which is the bytes URL)."
   [url dest-path]
-  (let [resp (http/request {:method :get :url url :as :byte-array :throw-exceptions false})]
+  (let [resp (http/request {:method :get :url url :as :byte-array :throw-exceptions false :timeout 600000})]
     (when (not= 200 (:status resp))
       (throw (ex-info "Could not download processed mp3"
                       {:url url :status (:status resp)})))
@@ -1343,10 +1390,12 @@
   episode's chapters into the file on the first processing (verified live
   on two episodes), and processed audio cannot be deleted anyway (the
   legacy delete_mp3 route 404s), so the old upload/delete/upload 'twice'
-  ritual is retired. Holds the episode lock for the whole run; on
-  verification failure after the new audio went live, best-effort
-  restores the pre-run temp url before rethrowing. Returns
-  {:status :report}."
+  ritual is retired. Holds the episode lock for the whole run. Safety rule:
+  verify chapters BEFORE publishing — once the episode is Public, a bad
+  file is already serving. The catch below best-effort re-stages the
+  pre-run temp url on verification failure, but that url is usually
+  consumed or stale by then, so treat rollback as a courtesy, not a
+  guarantee. Returns {:status :report}."
   [{:keys [client podcast episode-guid mp3-path chapters-file]}]
   (let [expected (load-chapters-csv chapters-file)
         args {:client client :podcast podcast :episode-guid episode-guid}
