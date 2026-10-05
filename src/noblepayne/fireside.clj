@@ -1236,16 +1236,16 @@
   file for release-episode-lock!."
   [episode-guid]
   (let [f (episode-lock-file episode-guid)]
-    (.mkdirs (.getParentFile f))
-    (if (.createNewFile f)
-      (do (spit (.getPath f)
+    (.mkdirs (.getParentFile ^java.io.File f))
+    (if (.createNewFile ^java.io.File f)
+      (do (spit (.getPath ^java.io.File f)
                 (str "pid=" (.getName (java.lang.management.ManagementFactory/getRuntimeMXBean))
                      " since=" (str (java.time.Instant/now)) "\n"))
           f)
-      (let [age-s (quot (- (System/currentTimeMillis) (.lastModified f)) 1000)]
+      (let [age-s (quot (- (System/currentTimeMillis) (.lastModified ^java.io.File f)) 1000)]
         (throw (ex-info "episode audio flow is already running elsewhere; refusing to start"
                         {:episode-guid episode-guid
-                         :lock (.getPath f)
+                         :lock (.getPath ^java.io.File f)
                          :lock-age-seconds age-s
                          :hint "remove the lock file once no run is active"}))))))
 
