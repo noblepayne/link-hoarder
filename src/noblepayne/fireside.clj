@@ -98,16 +98,16 @@
                                                links-url-page)]
                      (-> meta-tag :attrs :content))]
     (let [resp (http/request {:method :post
-                                :url delete-url
-                                :http-client client
-                                :throw-exceptions false
-                                :form-params {"_method" "delete"
-                                              "authenticity_token" auth-token}})]
+                              :url delete-url
+                              :http-client client
+                              :throw-exceptions false
+                              :form-params {"_method" "delete"
+                                            "authenticity_token" auth-token}})]
       (when (not (<= 200 (:status resp) 399))
         (throw (ex-info "Failed to delete link"
                         {:status (:status resp) :episode-guid episode-guid
                          :link-guid link-guid}))))
-      true))
+    true))
 
 (defn purge-links [{:keys [client podcast episode-guid] :as args}]
   (let [links-url (str/join "/" [FIRESIDE-BASE-URL
