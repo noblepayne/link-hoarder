@@ -52,11 +52,11 @@
                   \r (.append sb \return)
                   \t (.append sb \tab)
                   \u (do (when (> (+ i 6) n)
-                             (fail s i "truncated \\u escape"))
-                           (let [hex (subs s (+ i 2) (+ i 6))]
-                             (try (.append sb (char (Integer/parseInt hex 16)))
-                                  (catch NumberFormatException _
-                                    (fail s i (str "bad \\u escape: " hex))))))
+                           (fail s i "truncated \\u escape"))
+                         (let [hex (subs s (+ i 2) (+ i 6))]
+                           (try (.append sb (char (Integer/parseInt hex 16)))
+                                (catch NumberFormatException _
+                                  (fail s i (str "bad \\u escape: " hex))))))
                   (fail s i (str "bad escape: \\" e)))
                 (recur (if (= e \u) (+ i 6) (+ i 2)))))
 
