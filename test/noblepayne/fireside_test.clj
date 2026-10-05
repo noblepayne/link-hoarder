@@ -672,9 +672,9 @@
                         (fn [pg id]
                           (let [m (orig pg id)]
                             (if @sent (merge m (select-keys @sent ["episode[status]"
-                                                                                  "episode[publish_at(1i)]" "episode[publish_at(2i)]"
-                                                                                  "episode[publish_at(3i)]" "episode[publish_at(4i)]"
-                                                                                  "episode[publish_at(5i)]"]))
+                                                                   "episode[publish_at(1i)]" "episode[publish_at(2i)]"
+                                                                   "episode[publish_at(3i)]" "episode[publish_at(4i)]"
+                                                                   "episode[publish_at(5i)]"]))
                                 m))))]
           (is (true? (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
                                            :status :unlisted :publish-at [2026 10 5 9 30]})))
