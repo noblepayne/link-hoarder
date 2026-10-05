@@ -84,18 +84,37 @@
                   next-link
                   (find-links (zip/next next-link))))))))
 
+(defn normalize-href
+  "Prepend https:// to scheme-less hrefs that look like bare domains
+  (e.g. connecteninternet.com/discount/Jupiter35).
+
+  Fireside drops scheme-less hrefs on save with no error, so without this
+  the link silently vanishes from the episode while the scrape insists it
+  is there. Leaves relative links, anchors, and explicit schemes alone."
+  [href]
+  (if (and (string? href)
+           (not (re-find #"^[a-zA-Z][a-zA-Z0-9+.-]*:" href))
+           (not (str/starts-with? href "/"))
+           (not (str/starts-with? href "#"))
+           (re-find #"\." href)
+           (not (re-find #"\s" href)))
+    (str "https://" href)
+    href))
+
 (defn dedup-links
-  "Remove duplicate links by :href, preserving document order.
-   First occurrence wins."
+  "Normalize hrefs, then remove duplicates by :href, preserving document
+  order. First occurrence wins, kept with its normalized href — so a bare
+  domain and its https:// twin collapse to one link instead of posting
+  twice (or dropping once)."
   [links]
   (let [seen (volatile! #{})]
     (vec
      (filter (fn [link]
-               (let [href (:href link)]
+               (let [href (normalize-href (:href link))]
                  (if (contains? @seen href)
                    false
                    (do (vswap! seen conj href) true))))
-             links))))
+             (map #(update % :href normalize-href) links)))))
 
 (defn extract-links [md-zip]
   (dedup-links
@@ -151,6 +170,22 @@
       (let [val (inner-content (xmlhiccup->xmlparsed (zip/node (hs/after-subtree ziploc))))]
         (if (string? val) (str/trim val) val)))))
 
+(defn dedupe-tags
+  "Remove duplicate tags case-insensitively, preserving order. First
+  occurrence wins, keeping its original casing.
+
+  The doc carries both \"Linux Podcast\" and \"Linux podcast\", and
+  exact-match distinct keeps both — Fireside then shows the tag twice."
+  [tags]
+  (let [seen (volatile! #{})]
+    (vec
+     (filter (fn [t]
+               (let [k (str/lower-case t)]
+                 (if (contains? @seen k)
+                   false
+                   (do (vswap! seen conj k) true))))
+             tags))))
+
 (defn extract-metadata [md-zip]
   {:guid (extract-single-meta md-zip :guid)
    :show (extract-single-meta md-zip :show)
@@ -161,7 +196,7 @@
               (#(str/split % #","))
               (map str/trim)
               (filter seq)
-              distinct
+              dedupe-tags
               ;; Reverse to match Fireside display order (Fireside reverses on ingest)
               reverse
               (str/join ", "))})

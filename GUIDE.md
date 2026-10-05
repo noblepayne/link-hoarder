@@ -205,6 +205,47 @@ CSV:
 Only Nebula is in the ads CSV. The Jupiter membership is added by hand and
 should be left alone.
 
+#### Adding a brand-new sponsor (worked example: Connecten, ep 687)
+
+When a new sponsor appears in the Ads CSV and is not in Fireside's sponsor
+dropdown, `sync-sponsorships` skips it and reports it in `:skipped`. To
+onboard it, create the sponsor and one campaign first — all of this was
+done from code on 2026-10-04 and every step verified live:
+
+1. **Read the creation forms, don't guess them.** Sponsor fields live on
+   `/podcasts/<slug>/sponsors/new`; campaign fields on
+   `/podcasts/<slug>/sponsors/<sponsor-uuid>/campaigns/new`. Both forms
+   declare `enctype="multipart/form-data"` but accept urlencoded posts
+   (same as every other write path in this file).
+
+2. **Sponsor fields** (`sponsor[title]`, `sponsor[url]`, `sponsor[status]`):
+   - `title` must **exactly** equal the Ads CSV `name` column
+     (`Connecten`, not `ConnecTen Internet`). `sync-sponsorships` matches
+     by exact string, so any other spelling silently skips every future
+     episode.
+   - `url` with protocol (`https://connecteninternet.com/discount/Jupiter35`).
+   - `status` `1` = Public (the default), `0` = Private. Read the options
+     off the form; do not hardcode from memory.
+
+3. **Campaign fields** (`campaign[title]`, `campaign[url]`,
+   `campaign[promo_code]`, `campaign[message]`, `campaign[script]`):
+   - `title` follows the product-name pattern (`Managed Nebula`, so
+     `Connecten Internet` — the name the show itself uses).
+   - `promo_code` is the offer code (`Jupiter35`).
+   - `message` is the read copy, taken from the show notes.
+   - `script` may be blank (Nebula's is).
+   - Create **exactly one** campaign. `sync-sponsorships` auto-picks the
+     campaign only when there is one; a second forces an explicit
+     `:campaign` on every future episode.
+
+4. **Attach it to the episode** with `add-sponsorship` (sponsor + words
+   timecode). This was the first successful `add-sponsorship` call — the
+   MapEntry bug meant sponsorship creation had never worked before.
+
+Source the copy from the show notes, not from memory: the link text, the
+thanks line, and the read itself usually carry the product name, the URL,
+and the offer.
+
 ## Tag Handling Logic
 - **Storage/Markdown:** Tags are kept in the order they appear.
 - **`extract-metadata`:** Automatically **reverses** tags so that the most specific/recent ones appear first in some views.

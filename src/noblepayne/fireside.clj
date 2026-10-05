@@ -786,8 +786,10 @@
        (println "Links purged")
 
        (println "Adding" total "new links...")
-       (doseq [{:keys [title href quote]} links
-               [idx] (map-indexed vector links)
+       ;; One binding only: a second sequence clause here would nest the
+       ;; iteration and post every link N times (15 links became 225
+       ;; posts on episode 687 before this was caught).
+       (doseq [[idx {:keys [title href quote]}] (map-indexed vector links)
                :let [link-num (inc idx)]]
          (println (format "  [%d/%d] %s" link-num total (or title href)))
          (add-link {:client client

@@ -1,6 +1,8 @@
 (ns noblepayne.link-hoarder-test
   (:require [clojure.test :refer [deftest is testing]]
             [noblepayne.link-hoarder :refer [dedup-links
+                                             dedupe-tags
+                                             normalize-href
                                              preview-markdown]]))
 
 (deftest dedup-links-test
@@ -124,3 +126,38 @@
     (is (= "* [Example](https://example.com)\n"
            (preview-markdown {:links [{:href "https://example.com" :title "Example" :quote nil}]}
                              :plain)))))
+
+(deftest normalize-href-test
+  (testing "prepends https to bare domains"
+    (is (= "https://connecteninternet.com/discount/Jupiter35"
+           (normalize-href "connecteninternet.com/discount/Jupiter35"))))
+
+  (testing "leaves explicit schemes alone"
+    (is (= "https://example.com/x" (normalize-href "https://example.com/x")))
+    (is (= "http://example.com/x" (normalize-href "http://example.com/x"))))
+
+  (testing "leaves relative links and anchors alone"
+    (is (= "/foo/bar" (normalize-href "/foo/bar")))
+    (is (= "#section" (normalize-href "#section"))))
+
+  (testing "leaves strings without dots alone"
+    (is (= "a" (normalize-href "a"))))
+
+  (testing "a bare domain and its https twin collapse to one link"
+    (is (= [{:href "https://connecteninternet.com/discount/Jupiter35" :title "t"}]
+           (dedup-links [{:href "https://connecteninternet.com/discount/Jupiter35" :title "t"}
+                         {:href "connecteninternet.com/discount/Jupiter35" :title "t"}])))))
+
+(deftest dedupe-tags-test
+  (testing "drops case-insensitive duplicates, first casing wins"
+    (is (= ["Linux Podcast" "NixOS"]
+           (dedupe-tags ["Linux Podcast" "NixOS" "Linux podcast"]))))
+
+  (testing "exact duplicates still collapse"
+    (is (= ["a"] (dedupe-tags ["a" "a"]))))
+
+  (testing "order is preserved"
+    (is (= ["b" "a"] (dedupe-tags ["b" "a" "B"]))))
+
+  (testing "empty in, empty out"
+    (is (= [] (dedupe-tags [])))))
