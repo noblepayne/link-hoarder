@@ -27,3 +27,11 @@
     (is (thrown? clojure.lang.ExceptionInfo (json/read-str "{\"a\": 1} garbage")))
     (is (thrown? clojure.lang.ExceptionInfo (json/read-str "")))
     (is (thrown? clojure.lang.ExceptionInfo (json/read-str nil)))))
+
+(deftest strictness-test
+  (testing "truncated \\u escape throws ex-info, not StringIndexOutOfBounds"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"truncated"
+                          (noblepayne.json/read-str "\"abc\\u12\""))))
+  (testing "way-out-of-range integer throws ex-info, not NumberFormatException"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"bad number"
+                          (noblepayne.json/read-str "99999999999999999999999")))))

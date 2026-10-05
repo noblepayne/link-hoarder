@@ -684,3 +684,45 @@
                   "episode[publish_at(5i)]" "30"}
                  (select-keys @sent ["episode[status]" "episode[publish_at(1i)]" "episode[publish_at(2i)]"
                                      "episode[publish_at(3i)]" "episode[publish_at(4i)]" "episode[publish_at(5i)]"]))))))))
+
+(deftest schedule-episode-range-test
+  (testing "out-of-range slots and bad shapes throw before any HTTP"
+    (let [called (atom false)]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] (reset! called true) nil)]
+        (doseq [bad [[2026 13 4 13 0] [2026 10 32 13 0] [2026 10 4 24 0]
+                     [1999 10 4 13 0] [2026 10 4 13] [2026 10 4]]]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                             :status :private :publish-at bad}))))
+        (is (false? @called))))))
+
+(deftest upload-rollback-test
+  (testing "verification failure re-stages the pre-run temp url, then rethrows the original"
+    (let [staged (atom nil)]
+      (with-redefs [noblepayne.fireside/current-temp-url (fn [_] "https://s3.example/old.mp3")
+                    noblepayne.fireside/upload-mp3 (fn [_] {:processing false :url "https://x/new.mp3"})
+                    noblepayne.fireside/download-mp3! (fn [_ _] "/tmp/x.mp3")
+                    noblepayne.fireside/ffprobe-chapters (fn [_] [{:title "Nope" :start 0.0}])
+                    noblepayne.fireside/attach-mp3! (fn [{:keys [temp-url]}] (reset! staged temp-url) true)
+                    noblepayne.fireside/acquire-episode-lock! (fn [_] :lock)
+                    noblepayne.fireside/release-episode-lock! (fn [_] nil)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Chapter count mismatch"
+                              (f/upload-and-verify-mp3 {:client nil :podcast "p" :episode-guid "g"
+                                                        :mp3-path "/tmp/x.mp3"
+                                                        :chapters-file "/home/wes/Downloads/workdir/Linux Unplugged 687 (Ads) Chapters.csv"})))
+        (is (= "https://s3.example/old.mp3" @staged))))))
+
+(deftest s3-upload-form-test
+  (testing "scrapes presign url and entity-decoded fields off the edit page"
+    (with-redefs [noblepayne.fireside/fetch-page!
+                  (fn [_ _ _] (str "<form id=\"episode_mp3_form_ggg\" "
+                                   "data-url=\"https://s3.example/up\" "
+                                   "data-form-data=\"{&quot;key&quot;:&quot;uploads/abc/${filename}&quot;}\">"))]
+      (let [{:keys [url fields]} (f/s3-upload-form {:client nil :podcast "p" :episode-guid "ggg"})]
+        (is (= "https://s3.example/up" url))
+        (is (= "uploads/abc/${filename}" (get fields "key")))))))
+
+(deftest decode-entities-order-test
+  (testing "&amp; decodes last so literal entities survive one level"
+    (is (= "&lt;" (f/decode-html-entities "&amp;lt;")))
+    (is (= "<&>" (f/decode-html-entities "&lt;&amp;&gt;")))))

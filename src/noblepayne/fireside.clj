@@ -1648,14 +1648,15 @@
                               "episode[tag_list]" tags-normalized}})))
 
 (defn decode-html-entities
-  "Decode common HTML entities in a string."
+  "Decode common HTML entities in a string. &amp; goes LAST: decoding it
+  first would turn a literal &amp;lt; into &lt; and then into <."
   [s]
   (-> s
-      (str/replace "&amp;" "&")
       (str/replace "&lt;" "<")
       (str/replace "&gt;" ">")
       (str/replace "&quot;" "\"")
-      (str/replace "&#39;" "'")))
+      (str/replace "&#39;" "'")
+      (str/replace "&amp;" "&")))
 
 (defn parse-timecode-to-seconds
   "Convert timecode string like '51 seconds' or '2 minutes 30 seconds' to total seconds."
