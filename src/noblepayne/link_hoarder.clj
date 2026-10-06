@@ -1,7 +1,6 @@
 (ns noblepayne.link-hoarder
   (:gen-class)
   (:require [clojure.java.io :as io]
-            [clojure.pprint :as pprint]
             [clojure.zip :as zip]
             [cybermonday.core :as markdown]
             [hato.client :as http]

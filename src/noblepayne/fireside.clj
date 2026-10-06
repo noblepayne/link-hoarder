@@ -3,7 +3,6 @@
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.pprint :as pprint]
-            [clojure.reflect :as reflect]
             [clojure.string :as str]
             [hato.client :as http]
             [hickory.core :as hickory]
@@ -1445,8 +1444,8 @@
 
   ;; record the real pre-roll time for an existing sponsor
   (sync-sponsorship-times {:client c
-                           :podcast (:podcast data)
-                           :episode-guid (:guid data)
+                           :podcast (:podcast noblepayne.link-hoarder/data)
+                           :episode-guid (:guid noblepayne.link-hoarder/data)
                            :ads-file (str work-dir "Linux Unplugged 686 (Ads) Ads.csv")
                            :sponsor "Nebula"})
 
