@@ -494,23 +494,27 @@
 
 (comment
 
-  ;; TODO empty ### breaks
-  (def data
-    (-main
-     "https://h.docs.lol/FJVlSKVLT7ahmwRcINrH3g"))
+  ;; Weekly scrape scratch: set DOC-URL, eval top to bottom.
+  ;; data is the shared var the fireside comment block reads.
+  ;; (687 values kept as a working example — replace per episode.)
+  (def DOC-URL "https://h.docs.lol/d81Y_BKPSaSOvgMMMk3qKw?both")
+  (def data (-main DOC-URL))
 
   data
-  ;; ads
-  (def data (assoc data :podcast "linuxunplugged"))
-  (def data (assoc data :guid ""))
-  ;; adfree
-  (def data (assoc data :podcast "adfree"))
-  (def data (assoc data :guid ""))
+  ;; ads feed
+  (def ads-data (-> data
+                    (assoc :podcast "linuxunplugged")
+                    (assoc :guid "c77dd843-0a44-4dec-9439-6e7a78f340a6")))
+  ;; adfree feed (guid never comes from the doc — always override)
+  (def adfree-data (-> data
+                       (assoc :podcast "adfree")
+                       (assoc :guid "12359b43-105b-4997-926c-b5eb2d9f8b27")))
 
-  (save-preview data)
-  (save-markdown data)
-  (save-preview-rendered data)
+  (save-preview ads-data)
+  (save-markdown ads-data)
+  (save-preview-rendered ads-data)
 
-  (spit "/tmp/data" data)
+  (spit "/tmp/data" ads-data)
 
-  (grab-link-data ""))
+  ;; compat: fireside scratch reads bare `data` (= ads feed)
+  (def data ads-data))

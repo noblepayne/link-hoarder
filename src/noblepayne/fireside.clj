@@ -1430,57 +1430,62 @@
 
 (comment
 
+  ;; Weekly flow scratch: set the three defs, eval top to bottom.
+  ;; Episode numbers are the Fireside slugs; guids via fetch-episode-ids.
+  ;; (Values below are 687's, kept as a working example — replace per episode.)
+  (def EP 687)
   (def work-dir "/home/wes/Downloads/workdir/")
+  (def ads-guid "c77dd843-0a44-4dec-9439-6e7a78f340a6")
+  (def premium-guid "12359b43-105b-4997-926c-b5eb2d9f8b27")
 
-  (def c (http-client))
-  (login-to-fireside c)
+  (def c (ensure-login))
 
-  (load-chapters-csv (str work-dir "Linux Unplugged 686 (Ads) Chapters.csv"))
-  (load-ads-csv (str work-dir "Linux Unplugged 686 (Ads) Ads.csv"))
+  ;; guids, when the doc doesn't carry them
+  (filter #(= EP (:episode_num %)) (fetch-episode-ids c "linuxunplugged"))
+  (filter #(= EP (:episode_num %)) (fetch-episode-ids c "adfree"))
 
-  ;; what Fireside already has
-  (fetch-sponsorships c (:podcast noblepayne.link-hoarder/data) (:guid noblepayne.link-hoarder/data))
-  (fetch-sponsorship-ids c (:podcast noblepayne.link-hoarder/data) (:guid noblepayne.link-hoarder/data))
+  ;; metadata (data prepared per feed — see link-hoarder comment block)
+  (set-show-meta {:client c :podcast "linuxunplugged" :episode-guid ads-guid
+                  :title (:title noblepayne.link-hoarder/data)
+                  :description (:description noblepayne.link-hoarder/data)
+                  :tags (:tags noblepayne.link-hoarder/data)})
 
-  ;; record the real pre-roll time for an existing sponsor
-  (sync-sponsorship-times {:client c
-                           :podcast (:podcast noblepayne.link-hoarder/data)
-                           :episode-guid (:guid noblepayne.link-hoarder/data)
-                           :ads-file (str work-dir "Linux Unplugged 686 (Ads) Ads.csv")
+  ;; links: purge + add per feed (data has :links [{:title :href :quote}])
+  (purge-links {:client c :podcast "linuxunplugged" :episode-guid ads-guid})
+  (doseq [{:keys [title href quote]} (:links noblepayne.link-hoarder/data)]
+    (add-link {:client c :podcast "linuxunplugged" :episode-guid ads-guid
+               :title title :url href :quote quote}))
+  (fetch-link-count {:client c :podcast "linuxunplugged" :episode-guid ads-guid})
+
+  ;; chapters per feed — Ads vs Premium timings differ, never cross the CSVs
+  (sync-chapters {:client c :podcast "linuxunplugged" :episode-guid ads-guid
+                  :chapters-file (str work-dir "Linux Unplugged " EP " (Ads) Chapters.csv")})
+  (sync-chapters {:client c :podcast "adfree" :episode-guid premium-guid
+                  :chapters-file (str work-dir "Linux Unplugged " EP " (Premium) Chapters.csv")})
+
+  ;; sponsors, main feed ONLY (never adfree)
+  (fetch-sponsorship-ids c "linuxunplugged" ads-guid)
+  (sync-sponsorship-times {:client c :podcast "linuxunplugged" :episode-guid ads-guid
+                           :ads-file (str work-dir "Linux Unplugged " EP " (Ads) Ads.csv")
                            :sponsor "Nebula"})
 
-  (try
+  ;; audio per feed (S3 → attach → await url → download → exact compare)
+  (upload-and-verify-mp3 {:client c :podcast "linuxunplugged" :episode-guid ads-guid
+                          :mp3-path (str work-dir "Linux Unplugged " EP " (Ads).mp3")
+                          :chapters-file (str work-dir "Linux Unplugged " EP " (Ads) Chapters.csv")})
+  (upload-and-verify-mp3 {:client c :podcast "adfree" :episode-guid premium-guid
+                          :mp3-path (str work-dir "Linux Unplugged " EP " (Premium).mp3")
+                          :chapters-file (str work-dir "Linux Unplugged " EP " (Premium) Chapters.csv")})
 
-    (delete-link {:client c
-                  :podcast "linuxunplugged"
-                  :episode-guid "869b643f-3e5b-4020-aec1-0ec3f2f26287"
-                  :link-guid "19b95853-18b8-4713-a3fe-aaa75e4f3430"})
-    (catch Exception e (def error e) (throw e)))
+  ;; publish (LUP: immediately — :public plus now, snapped down to quarter-hour PT)
+  (schedule-episode! {:client c :podcast "linuxunplugged" :episode-guid ads-guid
+                      :status :public :publish-at [2026 10 4 21 15]})
+  (schedule-episode! {:client c :podcast "adfree" :episode-guid premium-guid
+                      :status :public :publish-at [2026 10 4 21 15]})
 
-  (try
-    (add-chapter {:client c
-                  :podcast "linuxunplugged"
-                  :episode-guid "b7a2d096-0fe0-48e9-8ed3-2cf129d1be4a"
-                  :timecode "0"
-                  :note "test"})
-    (catch Exception e (def error e) (throw e)))
-
-  ;; Episode 686 chapter sync. The (Ads) file belongs to the public
-  ;; linuxunplugged feed; the (Premium) file belongs to the adfree feed.
-  ;; Both feeds carry a separate episode even though the audio is the same,
-  ;; so chapters must be pushed twice.
-  (def ads-guid (:guid noblepayne.link-hoarder/data))
-  (def premium-guid "9d553b2d-a2ac-4ca4-a7b4-00ffc319f4de")
-
-  (sync-chapters {:client c
-                  :podcast "linuxunplugged"
-                  :episode-guid ads-guid
-                  :chapters-file (str work-dir "Linux Unplugged 686 (Ads) Chapters.csv")})
-
-  (sync-chapters {:client c
-                  :podcast "adfree"
-                  :episode-guid premium-guid
-                  :chapters-file (str work-dir "Linux Unplugged 686 (Premium) Chapters.csv")}))
+  ;; status checks
+  (mp3-status {:client c :podcast "linuxunplugged" :episode-guid ads-guid})
+  (mp3-status {:client c :podcast "adfree" :episode-guid premium-guid}))
 
 (defn prepare-data
   "Fetch markdown from url and prepare data with podcast association.
