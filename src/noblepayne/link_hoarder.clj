@@ -494,7 +494,6 @@
     (str "file://" path)))
 
 (comment
-  (use 'clojure.repl 'clojure.pprint)
 
   ;; TODO empty ### breaks
   (def data

@@ -2,6 +2,8 @@
   (:gen-class)
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as shell]
+            [clojure.pprint :as pprint]
+            [clojure.reflect :as reflect]
             [clojure.string :as str]
             [hato.client :as http]
             [hickory.core :as hickory]
@@ -1438,8 +1440,8 @@
   (load-ads-csv (str work-dir "Linux Unplugged 686 (Ads) Ads.csv"))
 
   ;; what Fireside already has
-  (fetch-sponsorships c (:podcast data) (:guid data))
-  (fetch-sponsorship-ids c (:podcast data) (:guid data))
+  (fetch-sponsorships c (:podcast noblepayne.link-hoarder/data) (:guid noblepayne.link-hoarder/data))
+  (fetch-sponsorship-ids c (:podcast noblepayne.link-hoarder/data) (:guid noblepayne.link-hoarder/data))
 
   ;; record the real pre-roll time for an existing sponsor
   (sync-sponsorship-times {:client c
@@ -1792,9 +1794,11 @@
   (def c (http-client))
   (login-to-fireside c)
 
-  (clojure.pprint/print-table
-   (sort-by :name
-            (filter :exception-types (:members (clojure.reflect/reflect cookie)))))
+  ;; Broken scratch: `cookie` was never defined. Left readable (not
+  ;; deleted) in case the exploration is ever redone against a real class.
+  #_(clojure.pprint/print-table
+     (sort-by :name
+              (filter :exception-types (:members (clojure.reflect/reflect cookie)))))
 
   (->> "https://app.fireside.fm/podcasts/linuxunplugged/episodes/bc95a92e-c86f-4577-90a7-7f6bf3f3f6db/edit"
        (#(http/get % {:http-client c}))
@@ -1826,7 +1830,7 @@
                   :episode-guid (:guid noblepayne.link-hoarder/data)})
     (catch Exception e (def error e) (throw e)))
 
-  (doseq [{:keys [:title :href :quote] :as link} (noblepayne.link-hoarder/data :links)]
+  (doseq [{:keys [:title :href :quote]} (noblepayne.link-hoarder/data :links)]
     (println href)
     (add-link {:client c
                :podcast (:podcast noblepayne.link-hoarder/data)
