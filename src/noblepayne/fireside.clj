@@ -1039,7 +1039,7 @@
                     "User-Agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
                     "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}})
         resp-body (str post-text)]
-    (when (and post-location (re-find #"/login(\\?.*)?$" post-location))
+    (when (and post-location (re-find #"/login(\?.*)?$" post-location))
       (throw (ex-info "Session expired during episode update: nothing was written"
                       {:episode-guid episode-guid :landed-on post-location})))
     (when (not (<= 200 post-status 399))
@@ -1062,8 +1062,11 @@
           stored (successful-controls fresh form-id)
           ;; A lone value scrapes back scalar while we may have sent a
           ;; one-vector (and vice versa): compare as vectors so [""] == "".
+          ;; Multi-values compare as SETS: checkbox re-scrape returns
+          ;; roster order, not submitted order, and order carries no meaning.
           as-vec (fn [x] (if (sequential? x) (vec x) [x]))
-          bad (remove (fn [[k v]] (= (as-vec (get stored k ::missing)) (as-vec v))) expect)]
+          as-set (fn [x] (let [v (as-vec x)] (if (= 1 (count v)) v (set v))))
+          bad (remove (fn [[k v]] (= (as-set (get stored k ::missing)) (as-set v))) expect)]
       (cond
         (empty? bad) true
         (>= attempt 12)

@@ -771,3 +771,59 @@
           (is (true? (f/set-participants! {:client nil :podcast "p" :episode-guid "g"
                                            :guest-ids ["18676"]})))
           (is (= ["" "18676"] (get @sent "episode[guest_ids][]"))))))))
+
+(deftest await-fields-order-test
+  (testing "multi-values compare order-insensitively (roster order, not submit order)"
+    (let [page {:tag :root
+                :content [{:tag :form :attrs {:id "f"}
+                           :content [{:tag :input :attrs {:type "checkbox" :name "h" :value "2" :checked "checked"}}
+                                     {:tag :input :attrs {:type "checkbox" :name "h" :value "1" :checked "checked"}}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)]
+        (is (true? ((deref #'noblepayne.fireside/await-fields!)
+                    nil "http://x" "f" {"h" ["1" "2"]} "g")))))))
+(testing "scalar stored vs one-vector expected still matches"
+  (let [page {:tag :root
+              :content [{:tag :form :attrs {:id "f"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "a" :value ""}}]}]}]
+    (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)]
+      (is (true? ((deref #'noblepayne.fireside/await-fields!)
+                  nil "http://x" "f" {"a" [""]} "g"))))))
+(testing "persistent mismatch throws with expected-vs-stored"
+  (let [page {:tag :root
+              :content [{:tag :form :attrs {:id "f"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "a" :value "old"}}]}]}]
+    (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)]
+      (try
+        ((deref #'noblepayne.fireside/await-fields!) nil "http://x" "f" {"a" "new"} "g")
+        (is false "should have thrown")
+        (catch clojure.lang.ExceptionInfo e
+          (is (= {"a" {:expected "new" :stored "old"}} (:mismatched (ex-data e)))))))))
+
+(deftest session-expiry-login-query-test
+  (testing "a /login?query redirect throws session-expired, not a 60s mismatch"
+    (let [page {:tag :root
+                :content [{:tag :form :attrs {:id "edit_episode_g"}
+                           :content [{:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                     {:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                     {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"}}
+                                     {:tag :textarea :attrs {:name "episode[description]"} :content ["D"]}
+                                     {:tag :textarea :attrs {:name "episode[subtitle]"} :content ["S"]}
+                                     {:tag :input :attrs {:type "hidden" :name "episode[status]" :value "0"}}
+                                     {:tag :input :attrs {:type "hidden" :name "episode[mp3_upload_url]" :value ""}}
+                                     {:tag :select :attrs {:name "episode[publish_at(1i)]"}
+                                      :content [{:tag :option :attrs {:value "2026" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(2i)]"}
+                                      :content [{:tag :option :attrs {:value "10" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(3i)]"}
+                                      :content [{:tag :option :attrs {:value "4" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(4i)]"}
+                                      :content [{:tag :option :attrs {:value "13" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(5i)]"}
+                                      :content [{:tag :option :attrs {:value "00" :selected "selected"}}]}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                    noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    noblepayne.fireside/curl-post-form!
+                    (fn [_] {:post-status 302 :location "https://app.fireside.fm/login?return_to=%2F" :body ""})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Session expired"
+                              (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                                    :status :private :publish-at [2026 10 4 13 0]})))))))
