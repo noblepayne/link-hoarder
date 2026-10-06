@@ -827,3 +827,10 @@
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Session expired"
                               (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
                                                     :status :private :publish-at [2026 10 4 13 0]})))))))
+
+(deftest cookies-for-guard-test
+  (testing "bad client fails clean, never raw NPE"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Bad Fireside client"
+                          (f/cookies-for nil "https://x")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Bad Fireside client"
+                          (f/cookies-for {} "https://x")))))

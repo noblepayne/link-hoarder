@@ -951,6 +951,10 @@
   lets us not follow and verify with a clean GET instead), and curl needs
   the session handed to it explicitly."
   [client uri]
+  (when-not (instance? java.net.http.HttpClient client)
+    (throw (ex-info "Bad Fireside client: expected the HttpClient from (ensure-login)"
+                    {:type (some-> client class str)
+                     :hint "REPL: (def c (ensure-login)); scripts: pass the return of ensure-login as :client"})))
   (let [mgr (.orElse (.cookieHandler ^java.net.http.HttpClient client) nil)]
     (when-not mgr
       (throw (ex-info "HTTP client has no cookie handler; cannot export session"
