@@ -199,8 +199,10 @@ Encode first (no WAVs/MP3s kept in workdir — disk routinely at 95%):
 ```bash
 cd ~/Downloads/workdir
 flac -d 'Linux Unplugged <EP> (Ads).flac' 'Linux Unplugged <EP> (Premium).flac'
-lame -m j --lowpass 20.5 -q 0 -b 128 --tn <EP> 'Linux Unplugged <EP> (Ads).wav'
-lame -m j --lowpass 20.5 -q 0 -b 128 --tn <EP> 'Linux Unplugged <EP> (Premium).wav'
+# The two encodes are independent — run together (~7 min saved, measured 687).
+lame -m j --lowpass 20.5 -q 0 -b 128 --tn <EP> 'Linux Unplugged <EP> (Ads).wav' &
+lame -m j --lowpass 20.5 -q 0 -b 128 --tn <EP> 'Linux Unplugged <EP> (Premium).wav' &
+wait
 ```
 
 `--tn` must equal the episode number (ID3 track number). Then:
@@ -288,9 +290,8 @@ Validation is strict: unknown status throws; minutes must be exactly
 - Scrape + meta + links per feed: ~1–3 min (publish-episode = 40–60 HTTP requests).
 - Chapters per feed: ~1 min (7 POSTs + reads).
 - Sponsors: seconds per sponsor.
-- MP3 per feed: S3 upload ~1–2 min (70+ MB), Fireside transcode ~5–20 min
-  (`await-processed` polls every 10s, deadline 1h). Transcode time dominates
-  the run.
+- MP3 per feed: S3 upload ~1–2 min (70+ MB), Fireside transcode ~1–5 min
+  measured on 687 (`await-processed` polls every 10s, deadline 20 min).
 - Full dual-feed run: ~30–60 min wall-clock, mostly waiting on transcodes.
 - Schedule/publish: seconds + 12×5s verify loop worst case.
 
