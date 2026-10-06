@@ -96,6 +96,23 @@ Verify (re-read, never trust the POST status):
 ;; episode edit page title/keywords, or via the public site after step 7.
 ```
 
+### 2b. participants (hosts/guests)
+
+Episodes default to the three regular hosts (Chris 1848, Wes 1849, Brent
+2108) with no guests. New drafts sometimes carry wrong assignments — check
+and fix before publishing; the audio flow preserves whatever is checked.
+
+```clojure
+;; read what's checked (labels need the label lookup; checked boxes only)
+(set-participants! {:client c :podcast "linuxunplugged"
+                    :episode-guid (:guid data)})
+;; with guests:
+(set-participants! {:client c :podcast "linuxunplugged"
+                    :episode-guid (:guid data)
+                    :guest-ids ["<fireside-person-id>"]})
+;; => true (both fields re-read and matched before returning)
+```
+
 ## 3. purge + add links (both feeds, 15 for 687)
 
 ```clojure

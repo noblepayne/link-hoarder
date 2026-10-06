@@ -726,3 +726,48 @@
   (testing "&amp; decodes last so literal entities survive one level"
     (is (= "&lt;" (f/decode-html-entities "&amp;lt;")))
     (is (= "<&>" (f/decode-html-entities "&lt;&amp;&gt;")))))
+
+(deftest set-participants-test
+  (let [page {:tag :root
+              :content [{:tag :form :attrs {:id "edit_episode_g"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                   {:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                   {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"}}
+                                   {:tag :textarea :attrs {:name "episode[description]"} :content ["D"]}
+                                   {:tag :textarea :attrs {:name "episode[subtitle]"} :content ["S"]}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[status]" :value "0"}}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[mp3_upload_url]" :value ""}}
+                                   {:tag :select :attrs {:name "episode[publish_at(1i)]"}
+                                    :content [{:tag :option :attrs {:value "2026" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(2i)]"}
+                                    :content [{:tag :option :attrs {:value "10" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(3i)]"}
+                                    :content [{:tag :option :attrs {:value "4" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(4i)]"}
+                                    :content [{:tag :option :attrs {:value "13" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(5i)]"}
+                                    :content [{:tag :option :attrs {:value "00" :selected "selected"}}]}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[host_ids][]" :value ""}}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[guest_ids][]" :value ""}}]}]}]
+    (testing "defaults to the three regular hosts with no guests"
+      (let [sent (atom nil)]
+        (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                      noblepayne.fireside/post-episode-form!
+                      (fn [{:keys [params]}] (reset! sent params) {:post-status 302})]
+          (with-redefs [noblepayne.fireside/successful-controls
+                        (let [orig (deref #'noblepayne.fireside/successful-controls)]
+                          (fn [pg id]
+                            (let [m (orig pg id)]
+                              (if @sent (merge m (select-keys @sent ["episode[host_ids][]" "episode[guest_ids][]"])) m))))]
+            (is (true? (f/set-participants! {:client nil :podcast "p" :episode-guid "g"})))
+            (is (= ["" "1848" "1849" "2108"] (get @sent "episode[host_ids][]")))
+            (is (= [""] (get @sent "episode[guest_ids][]")))))))
+    (testing "explicit guests ride along after the blank"
+      (let [sent (atom nil)]
+        (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                      noblepayne.fireside/post-episode-form!
+                      (fn [{:keys [params]}] (reset! sent params) {:post-status 302})
+                      noblepayne.fireside/await-fields! (fn [& _] true)]
+          (is (true? (f/set-participants! {:client nil :podcast "p" :episode-guid "g"
+                                           :guest-ids ["18676"]})))
+          (is (= ["" "18676"] (get @sent "episode[guest_ids][]"))))))))

@@ -1060,7 +1060,10 @@
   (loop [attempt 1]
     (let [fresh (fetch-as-hickory {:http-client client :url (str base "/edit")})
           stored (successful-controls fresh form-id)
-          bad (remove (fn [[k v]] (= (str (get stored k ::missing)) (str v))) expect)]
+          ;; A lone value scrapes back scalar while we may have sent a
+          ;; one-vector (and vice versa): compare as vectors so [""] == "".
+          as-vec (fn [x] (if (sequential? x) (vec x) [x]))
+          bad (remove (fn [[k v]] (= (as-vec (get stored k ::missing)) (as-vec v))) expect)]
       (cond
         (empty? bad) true
         (>= attempt 12)
@@ -1209,6 +1212,37 @@
                              :episode-guid episode-guid})
         (await-fields! client base form-id overrides episode-guid)
         true))))
+
+(def default-host-ids
+  "Person IDs of the three regular hosts: Chris Fisher, Wes Payne,
+  Brent Gervais. Stable Fireside IDs; episodes default to exactly these
+  with no guests unless Wes names some."
+  ["1848" "1849" "2108"])
+
+(defn set-participants!
+  "Set host/guest checkboxes without touching anything else. host-ids
+  and guest-ids are person-ID strings; hosts default to the three
+  regulars, guests default to none. A leading blank is always sent (the
+  form's hidden unchecked-value input — the browser sends it too).
+  Verifies every written field by re-reading before returning true."
+  [{:keys [client podcast episode-guid host-ids guest-ids]
+    :or {host-ids default-host-ids guest-ids []}}]
+  (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                            "episodes" episode-guid])
+        form-id (str "edit_episode_" episode-guid)
+        page (fetch-as-hickory {:http-client client :url (str base "/edit")})
+        controls (successful-controls page form-id)
+        overrides {"episode[host_ids][]" (vec (cons "" host-ids))
+                   "episode[guest_ids][]" (vec (cons "" guest-ids))}
+        params (merge controls overrides
+                      {"episode[description]" (str/trim (str (get controls "episode[description]" "")))
+                       "episode[subtitle]" (str/trim (str (get controls "episode[subtitle]" "")))
+                       "button" ""})]
+    (assert-required-fields! params episode-guid)
+    (post-episode-form! {:client client :base base :params params
+                         :episode-guid episode-guid})
+    (await-fields! client base form-id overrides episode-guid)
+    true))
 
 (defn mp3-status
   "Read check_mp3_status. Returns {:processing bool :url :download-url
@@ -1468,6 +1502,9 @@
   (sync-sponsorship-times {:client c :podcast "linuxunplugged" :episode-guid ads-guid
                            :ads-file (str work-dir "Linux Unplugged " EP " (Ads) Ads.csv")
                            :sponsor "Nebula"})
+
+  ;; participants: 3 regular hosts, no guests unless Wes names some
+  (set-participants! {:client c :podcast "linuxunplugged" :episode-guid ads-guid})
 
   ;; audio per feed (S3 → attach → await url → download → exact compare)
   (upload-and-verify-mp3 {:client c :podcast "linuxunplugged" :episode-guid ads-guid
