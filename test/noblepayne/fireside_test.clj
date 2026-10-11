@@ -840,12 +840,14 @@
 (deftest upload-twice-and-verify-test
   (testing "uploads twice, verifies the final bytes once"
     (let [uploads (atom 0)
+          seen-prev (atom [])
           csv (java.io.File/createTempFile "chapters" ".csv")]
       (spit (.getPath csv) "number,position_seconds,timecode,name\n1,0.00,00:00:00,Intro\n")
       (with-redefs [noblepayne.fireside/current-temp-url (fn [_] nil)
                     noblepayne.fireside/upload-mp3
                     (fn [{:keys [previous-url]}]
                       (swap! uploads inc)
+                      (swap! seen-prev conj previous-url)
                       {:processing false :url (str "https://x/pass" @uploads ".mp3")})
                     noblepayne.fireside/download-mp3! (fn [_ _] "/tmp/x.mp3")
                     noblepayne.fireside/ffprobe-chapters (fn [_] [{:title "Intro" :start 0.0}])
@@ -855,5 +857,6 @@
                                                                       :mp3-path "/tmp/x.mp3"
                                                                       :chapters-file (.getPath csv)})]
           (is (= 2 @uploads))
+          (is (= [nil "https://x/pass1.mp3"] @seen-prev))
           (is (= "https://x/pass2.mp3" (:url status)))
           (is (true? (:verified report))))))))
