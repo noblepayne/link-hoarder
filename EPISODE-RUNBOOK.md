@@ -53,8 +53,8 @@ Conventions: `EP` = episode number, e.g. `687`. All REPL snippets assume
 Verify before anything is pushed:
 
 ```clojure
-(lh/save-preview data)          ; => file:///dev/shm/link-hoarder-<guid>.html — open, read it
-(lh/save-markdown data)         ; => file:///dev/shm/episode-links-<guid>.md
+(lh/save-preview-rendered data) ; => file:///dev/shm/link-hoarder-rendered-<guid>.html — the shareable one
+(lh/save-markdown data)         ; => file:///dev/shm/episode-links-<guid>.md — keep for the record
 (str (:tags data))              ; tags look reversed here; set-show-meta un-reverses on push
 ```
 
