@@ -146,6 +146,8 @@ no second `:when`/sequence clause.
 
 Verify: open each feed's `/links` page in Fireside, count rows = link count.
 Purge destroys hand-edits — re-running is safe for links only.
+Standing rule: every doc update means a full resync (meta + links) plus
+fresh previews — never assume only one part changed.
 
 ## 4. sync chapters (both feeds, per-feed CSV)
 
