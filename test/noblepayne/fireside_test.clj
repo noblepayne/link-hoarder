@@ -698,7 +698,9 @@
 
 (deftest upload-rollback-test
   (testing "verification failure re-stages the pre-run temp url, then rethrows the original"
-    (let [staged (atom nil)]
+    (let [staged (atom nil)
+          csv (java.io.File/createTempFile "chapters" ".csv")]
+      (spit (.getPath csv) "number,position_seconds,timecode,name\n1,0.00,00:00:00,Intro\n")
       (with-redefs [noblepayne.fireside/current-temp-url (fn [_] "https://s3.example/old.mp3")
                     noblepayne.fireside/upload-mp3 (fn [_] {:processing false :url "https://x/new.mp3"})
                     noblepayne.fireside/download-mp3! (fn [_ _] "/tmp/x.mp3")
@@ -706,10 +708,10 @@
                     noblepayne.fireside/attach-mp3! (fn [{:keys [temp-url]}] (reset! staged temp-url) true)
                     noblepayne.fireside/acquire-episode-lock! (fn [_] :lock)
                     noblepayne.fireside/release-episode-lock! (fn [_] nil)]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Chapter count mismatch"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"mismatch"
                               (f/upload-and-verify-mp3 {:client nil :podcast "p" :episode-guid "g"
                                                         :mp3-path "/tmp/x.mp3"
-                                                        :chapters-file "/home/wes/Downloads/workdir/Linux Unplugged 687 (Ads) Chapters.csv"})))
+                                                        :chapters-file (.getPath csv)})))
         (is (= "https://s3.example/old.mp3" @staged))))))
 
 (deftest s3-upload-form-test
@@ -834,3 +836,24 @@
                           (f/cookies-for nil "https://x")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Bad Fireside client"
                           (f/cookies-for {} "https://x")))))
+
+(deftest upload-twice-and-verify-test
+  (testing "uploads twice, verifies the final bytes once"
+    (let [uploads (atom 0)
+          csv (java.io.File/createTempFile "chapters" ".csv")]
+      (spit (.getPath csv) "number,position_seconds,timecode,name\n1,0.00,00:00:00,Intro\n")
+      (with-redefs [noblepayne.fireside/current-temp-url (fn [_] nil)
+                    noblepayne.fireside/upload-mp3
+                    (fn [{:keys [previous-url]}]
+                      (swap! uploads inc)
+                      {:processing false :url (str "https://x/pass" @uploads ".mp3")})
+                    noblepayne.fireside/download-mp3! (fn [_ _] "/tmp/x.mp3")
+                    noblepayne.fireside/ffprobe-chapters (fn [_] [{:title "Intro" :start 0.0}])
+                    noblepayne.fireside/acquire-episode-lock! (fn [_] :lock)
+                    noblepayne.fireside/release-episode-lock! (fn [_] nil)]
+        (let [{:keys [status report]} (f/upload-twice-and-verify-mp3 {:client nil :podcast "p" :episode-guid "g"
+                                                                      :mp3-path "/tmp/x.mp3"
+                                                                      :chapters-file (.getPath csv)})]
+          (is (= 2 @uploads))
+          (is (= "https://x/pass2.mp3" (:url status)))
+          (is (true? (:verified report))))))))

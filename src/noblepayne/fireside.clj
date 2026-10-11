@@ -651,24 +651,32 @@
         form (sponsorship-form {:client client
                                 :podcast podcast
                                 :episode-guid episode-guid})
-        sponsor-labels (set (vals (:sponsors form)))]
+        sponsor-labels (set (vals (:sponsors form)))
+        ;; Already attached (same sponsor, any timecode): re-running must
+        ;; not duplicate rows. Proven live: a second run pushed Nebula twice.
+        have (set (map (fn [{:keys [sponsor campaign]}] [sponsor campaign])
+                       (fetch-sponsorship-ids client podcast episode-guid)))]
     (loop [remaining ads
            pushed []
-           skipped []]
+           skipped []
+           present []]
       (if-let [row (first remaining)]
         (if (sponsor-labels (:name row))
-          (let [words (or (timecode->words (:start-timecode row))
-                          (seconds->words (:start-seconds row)))]
-            (println "  " words (:name row))
-            (let [result (add-sponsorship {:client client
-                                           :podcast podcast
-                                           :episode-guid episode-guid
-                                           :sponsor (:name row)
-                                           :timecode words})]
-              (recur (rest remaining) (conj pushed result) skipped)))
+          (if (some #(= (:name row) (first %)) have)
+            (do (println "  already present" (:name row))
+                (recur (rest remaining) pushed skipped (conj present (:name row))))
+            (let [words (or (timecode->words (:start-timecode row))
+                            (seconds->words (:start-seconds row)))]
+              (println "  " words (:name row))
+              (let [result (add-sponsorship {:client client
+                                             :podcast podcast
+                                             :episode-guid episode-guid
+                                             :sponsor (:name row)
+                                             :timecode words})]
+                (recur (rest remaining) (conj pushed result) skipped present))))
           (do (println "  skipping" (:name row) "- not a Fireside sponsor")
-              (recur (rest remaining) pushed (conj skipped (:name row)))))
-        {:pushed pushed :skipped skipped}))))
+              (recur (rest remaining) pushed (conj skipped (:name row)) present)))
+        {:pushed pushed :skipped skipped :present present}))))
 
 (defn fetch-page!
   "GET url and return the body. Throws unless we land a 200 on the URL we
@@ -1425,16 +1433,29 @@
       (when-not (str/blank? (str v)) (str v)))
     (catch Exception _ nil)))
 
+(defn verify-processed-file!
+  "Download the processed bytes at url and verify embedded chapters
+  exactly against the rows from chapters-file. Returns
+  {:chapters n :verified true} or throws. Cleans up the download."
+  [url expected]
+  (let [tmp (java.io.File/createTempFile "fireside-verify-" ".mp3")]
+    (try
+      (println "Downloading processed file for verification...")
+      (download-mp3! url (.getAbsolutePath tmp))
+      (println "Comparing embedded chapters...")
+      (compare-chapters expected (ffprobe-chapters (.getAbsolutePath tmp)))
+      (println "Chapters verified exactly.")
+      {:chapters (count expected) :verified true}
+      (finally (.delete tmp)))))
+
 (defn upload-and-verify-mp3
   "Single verified pass: S3 upload, attach, await processing, download
   the processed file and verify its embedded chapters exactly against
-  chapters-file. A second pass adds nothing: current Fireside writes the
-  episode's chapters into the file on the first processing (verified live
-  on two episodes), and processed audio cannot be deleted anyway (the
-  legacy delete_mp3 route 404s), so the old upload/delete/upload 'twice'
-  ritual is retired. Holds the episode lock for the whole run. Safety rule:
-  verify chapters BEFORE publishing — once the episode is Public, a bad
-  file is already serving. The catch below best-effort re-stages the
+  chapters-file. Prefer upload-twice-and-verify-mp3: the first processing
+  of fresh audio repeatedly comes back without embedded chapters, while
+  the second gets them. Holds the episode lock for the whole run. Safety
+  rule: verify chapters BEFORE publishing — once the episode is Public, a
+  bad file is already serving. The catch below best-effort re-stages the
   pre-run temp url on verification failure, but that url is usually
   consumed or stale by then, so treat rollback as a courtesy, not a
   guarantee. Returns {:status :report}."
@@ -1445,16 +1466,10 @@
         fallback (current-temp-url args)]
     (try
       (println "Uploading...")
-      (let [final (upload-mp3 (assoc args :mp3-path mp3-path))
-            tmp (java.io.File/createTempFile "fireside-verify-" ".mp3")]
+      (let [final (upload-mp3 (assoc args :mp3-path mp3-path))]
         (try
-          (println "Downloading processed file for verification...")
-          (download-mp3! (:url final) (.getAbsolutePath tmp))
-          (println "Comparing embedded chapters...")
-          (compare-chapters expected (ffprobe-chapters (.getAbsolutePath tmp)))
-          (println "Chapters verified exactly.")
           {:status final
-           :report {:chapters (count expected) :verified true}}
+           :report (verify-processed-file! (:url final) expected)}
           (catch Throwable t
             (when fallback
               (println "Attempting rollback to pre-run audio...")
@@ -1464,8 +1479,45 @@
                 (println "Rollback staged the pre-run temp url.")
                 (catch Exception r
                   (println "Rollback failed:" (ex-message r)))))
-            (throw t))
-          (finally (.delete tmp))))
+            (throw t))))
+      (finally
+        (release-episode-lock! lock)))))
+
+(defn upload-twice-and-verify-mp3
+  "Two verified passes: upload, await, upload again (fresh presign), await,
+  then download and verify exactly. The first processing of fresh audio
+  repeatedly comes back without embedded chapters while the second gets
+  them (proven live on 688: bare, bare, then 7/7) — this is the old Ruby
+  upload_file_twice ritual minus its delete step, which is unachievable
+  (legacy delete_mp3 route 404s) and unnecessary (re-attaching over the
+  top is what triggers the embedding pass). Same lock/rollback/verify
+  semantics as upload-and-verify-mp3. Returns {:status :report}."
+  [{:keys [client podcast episode-guid mp3-path chapters-file]}]
+  (let [expected (load-chapters-csv chapters-file)
+        args {:client client :podcast podcast :episode-guid episode-guid}
+        lock (acquire-episode-lock! episode-guid)
+        fallback (current-temp-url args)]
+    (try
+      (println "Pass 1/2...")
+      (let [pass1 (upload-mp3 (assoc args :mp3-path mp3-path))]
+        (when-not (:url pass1)
+          (throw (ex-info "Pass 1 produced no bytes url" {:status pass1})))
+        (println "Pass 2/2 (fresh presign)...")
+        (let [final (upload-mp3 (assoc args :mp3-path mp3-path
+                                       :previous-url (:url pass1)))]
+          (try
+            {:status final
+             :report (verify-processed-file! (:url final) expected)}
+            (catch Throwable t
+              (when fallback
+                (println "Attempting rollback to pre-run audio...")
+                (try
+                  (attach-mp3! {:client client :podcast podcast :episode-guid episode-guid
+                                :temp-url fallback :file-name "rollback.mp3"})
+                  (println "Rollback staged the pre-run temp url.")
+                  (catch Exception r
+                    (println "Rollback failed:" (ex-message r)))))
+              (throw t)))))
       (finally
         (release-episode-lock! lock)))))
 
