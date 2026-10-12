@@ -695,6 +695,14 @@
                     (second (re-find #"/sponsors/([0-9a-f-]{36})$" href)))))))
           (hs/select (hs/tag :a) page))))
 
+(defn- redirect-location
+  "Pull the Location header out of a hato response, case-insensitively.
+  Live hato downcases header names, but a stub or proxy that preserves
+  `Location` should not turn every success into 'no uuid in redirect'."
+  [resp]
+  (some (fn [[k v]] (when (= "location" (clojure.string/lower-case (str k))) (str v)))
+        (:headers resp)))
+
 (defn onboard-sponsor!
   "Create a brand-new sponsor plus its first (and only) campaign, then
   verify both read back. Takes the five decided values — title must
@@ -702,16 +710,25 @@
   future episode; exactly one campaign is created because sync
   auto-picks only in the single-campaign case. Message is website copy
   for readers (third person, no em dashes), never the ad read.
+  When :episode-guid and :timecode in words (e.g. 15m 50s) are given, the
+  sponsorship is attached too, so one call goes from CSV row to attached
+  sponsor. If the title already exists nothing is created; the attach
+  still runs when :episode-guid/:timecode are given. An explicit
+  :campaign overrides the single-campaign auto-pick.
   Returns {:sponsor :campaign :sponsor-guid :created? true}, or if the
-  title already exists, {:sponsor :sponsor-guid :created? false} without
-  touching anything."
-  [{:keys [client podcast title url campaign-title promo-code message episode-guid timecode]}]
+  title already existed, the same shape with :created? false."
+  [{:keys [client podcast title url campaign-title promo-code message episode-guid timecode campaign]}]
   (when (str/blank? title)
     (throw (ex-info "Sponsor title must not be blank" {})))
   (when (str/blank? message)
     (throw (ex-info "Campaign message must not be blank" {:sponsor title})))
   (if-let [existing (sponsor-guid-by-title {:client client :podcast podcast :title title})]
-    {:sponsor title :sponsor-guid existing :created? false}
+    (do (when (and episode-guid timecode)
+          (println "  already exists; attaching at" timecode)
+          (add-sponsorship (cond-> {:client client :podcast podcast :episode-guid episode-guid
+                                    :sponsor title :timecode timecode}
+                             campaign (assoc :campaign campaign))))
+        {:sponsor title :sponsor-guid existing :created? false})
     (let [nc (http/build-http-client {:connect-timeout 30000 :redirect-policy :never
                                       :cookie-policy :none})
           cookies (cookies-for client FIRESIDE-BASE-URL)
@@ -722,12 +739,16 @@
           post! (fn [url referer form-params]
                   (let [resp (http/post url {:http-client nc :throw-exceptions false
                                              :headers (assoc std-headers "Referer" referer)
-                                             :form-params form-params})]
-                    (when (not (<= 200 (:status resp) 399))
+                                             :form-params form-params})
+                        loc (redirect-location resp)]
+                    ;; Rails re-renders the form with a 200 on validation
+                    ;; failure, which is not success no matter the 2xx.
+                    (when-not (and (contains? #{302 303} (:status resp)) loc)
                       (throw (ex-info "Sponsor onboarding POST failed"
                                       {:url url :status (:status resp)
+                                       :location loc
                                        :body (subs (str (:body resp)) 0 (min 300 (count (str (:body resp)))))})))
-                    (get (:headers resp) "location")))
+                    loc))
           ;; 1. sponsor. Forms accept urlencoded (multipart 500s here too).
           new-page (fetch-as-hickory {:http-client client
                                       :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/new")})
@@ -759,14 +780,19 @@
                                "campaign[promo_code]" (or promo-code "")
                                "campaign[message]" message "campaign[script]" ""
                                "commit" "Create Campaign"))]
+        (when-not (re-find #"/campaigns/([0-9a-f-]{36})$" (str cloc))
+          (throw (ex-info "Campaign create redirected somewhere unexpected"
+                          {:location cloc :sponsor title})))
         (println "  campaign" campaign-title "->" cloc)
         ;; 3. verify both read back before claiming success.
         (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
           (when-not (= back sid)
             (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid})))
-          (println "  attaching at" timecode)
-          (add-sponsorship {:client client :podcast podcast :episode-guid episode-guid
-                            :sponsor title :campaign campaign-title :timecode timecode}))
+          (when (and episode-guid timecode)
+            (println "  attaching at" timecode)
+            (add-sponsorship (cond-> {:client client :podcast podcast :episode-guid episode-guid
+                                      :sponsor title :timecode timecode}
+                               campaign (assoc :campaign campaign-title)))))
         {:sponsor title :campaign campaign-title :sponsor-guid sid :created? true}))))
 
 (defn fetch-page!

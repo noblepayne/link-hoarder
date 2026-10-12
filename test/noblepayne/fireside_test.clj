@@ -887,7 +887,7 @@
                       (cond (re-find #"sponsors$" url)
                             {:status 302 :headers {"location" "https://x/podcasts/p/sponsors/8bfb1e79-a40f-4352-91cb-725df5f56da2"}}
                             (re-find #"campaigns$" url)
-                            {:status 302 :headers {"location" "https://x/campaigns/CID"}}
+                            {:status 302 :headers {"location" "https://x/campaigns/94e7e1f4-80fe-4cea-a39d-d6521027f2f6"}}
                             :else {:status 500 :headers {}}))]
         (let [r (f/onboard-sponsor! {:client nil :podcast "p" :title "Hostinger"
                                      :url "https://hostinger.com/unplugged"
