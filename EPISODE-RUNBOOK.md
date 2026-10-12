@@ -211,7 +211,8 @@ exactly equal the Ads CSV `name` (`Connecten`), one campaign only
 "Adding a brand-new sponsor".
 
 Verify: `fetch-sponsorship-ids` shows each sponsor with the CSV's start
-timecode in words (`00:00:59` → `59s`).
+timecode in words (`00:00:59` → `59s`), PLUS the Jupiter membership at `0s`
+— check all three on the public page's sponsors section, not just the CSV rows.
 
 ## 6. upload-and-verify-mp3 (per feed, last)
 
