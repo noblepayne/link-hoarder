@@ -179,7 +179,6 @@ Verify: `fetch-chapter-ids` count == CSV data rows (687: 7 each).
 ## 5. sponsors — main feed ONLY, never adfree
 
 Normal case (episode already carries recurring sponsors): update timecodes in place.
-
 ```clojure
 (fs/fetch-sponsorship-ids c "linuxunplugged" (:guid data))
 ;; => [{:sponsor "Nebula" :campaign "Managed Nebula" ...} ...]
@@ -201,7 +200,10 @@ New episode with no sponsorships yet: create from the ads CSV.
 
 `Dynamic N` rows are skipped (Fireside has no dynamic-marker field) — expected,
 not an error. The Jupiter membership (`Jupiter Signal Network Membership` /
-`Jupiter Party Annual Membership`) is in no CSV; leave it alone.
+`Jupiter Party Annual Membership`) is in no CSV and must be attached by hand
+— it has several campaigns, so pass `:campaign "Jupiter Party Annual
+Membership"` explicitly at `0s` or the call refuses (proven on 688, which
+shipped without it until caught on the public page).
 
 New sponsor onboarding (proven 2026-10-04 with Connecten on 687): title must
 exactly equal the Ads CSV `name` (`Connecten`), one campaign only
