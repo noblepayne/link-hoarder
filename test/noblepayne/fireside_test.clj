@@ -860,3 +860,49 @@
           (is (= [nil "https://x/pass1.mp3"] @seen-prev))
           (is (= "https://x/pass2.mp3" (:url status)))
           (is (true? (:verified report))))))))
+
+(deftest onboard-sponsor-test
+  (testing "creates sponsor + one campaign, verifies readback"
+    (let [lookups (atom 0)
+          sform {:tag :form :attrs {:action "/podcasts/p/sponsors"}
+                 :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}
+          cform {:tag :form :attrs {:action "/podcasts/p/sponsors/SID/campaigns"}
+                 :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}
+          sponsors-page {:tag :root :content []}
+          posted (atom [])]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory
+                    (fn [{:keys [url]}]
+                      (cond (re-find #"campaigns/new" url) {:tag :root :content [cform]}
+                            (re-find #"sponsors/new" url) {:tag :root :content [sform]}
+                            :else sponsors-page))
+                    noblepayne.fireside/sponsor-guid-by-title
+                    (fn [{:keys [title]}]
+                      (swap! lookups inc)
+                      (when (and (= title "Hostinger") (> @lookups 1)) "8bfb1e79-a40f-4352-91cb-725df5f56da2"))
+                    noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    http/post
+                    (fn [url & _]
+                      (swap! posted conj url)
+                      (cond (re-find #"sponsors$" url)
+                            {:status 302 :headers {"location" "https://x/podcasts/p/sponsors/8bfb1e79-a40f-4352-91cb-725df5f56da2"}}
+                            (re-find #"campaigns$" url)
+                            {:status 302 :headers {"location" "https://x/campaigns/CID"}}
+                            :else {:status 500 :headers {}}))]
+        (let [r (f/onboard-sponsor! {:client nil :podcast "p" :title "Hostinger"
+                                     :url "https://hostinger.com/unplugged"
+                                     :campaign-title "Hostinger AI Builder"
+                                     :promo-code "UNPLUGGED" :message "Try it."})]
+          (is (= "8bfb1e79-a40f-4352-91cb-725df5f56da2" (:sponsor-guid r)))
+          (is (true? (:created? r)))
+          (is (= 2 (count @posted)))))))
+  (testing "existing sponsor returns without touching anything"
+    (let [posted (atom 0)]
+      (with-redefs [noblepayne.fireside/sponsor-guid-by-title (fn [_] "EXISTING")
+                    noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    http/post (fn [& _] (swap! posted inc) {:status 302 :headers {}})]
+        (let [r (f/onboard-sponsor! {:client nil :podcast "p" :title "Nebula"
+                                     :url "https://x" :campaign-title "C"
+                                     :promo-code "" :message "M"})]
+          (is (false? (:created? r)))
+          (is (= "EXISTING" (:sponsor-guid r)))
+          (is (zero? @posted)))))))

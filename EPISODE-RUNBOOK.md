@@ -205,9 +205,22 @@ not an error. The Jupiter membership (`Jupiter Signal Network Membership` /
 Membership"` explicitly at `0s` or the call refuses (proven on 688, which
 shipped without it until caught on the public page).
 
-New sponsor onboarding (proven 2026-10-04 with Connecten on 687): title must
-exactly equal the Ads CSV `name` (`Connecten`), one campaign only
-(`Connecten Internet`, promo `Jupiter35`). Full procedure in GUIDE.md
+New sponsor onboarding (proven twice: Connecten on 687, Hostinger on 688)
+is one call — decide the five values from the transcript read + the doc,
+then run it. Title must exactly equal the Ads CSV `name`; message is
+website copy for readers (third person, no em dashes), never the ad read:
+
+```clojure
+(fs/onboard-sponsor! {:client c :podcast "linuxunplugged"
+                      :title "Hostinger" :url "https://hostinger.com/unplugged"
+                      :campaign-title "Hostinger AI Builder" :promo-code "UNPLUGGED"
+                      :message "<third-person web copy with URL + offer>"})
+;; => {:sponsor ... :campaign ... :sponsor-guid ... :created? true}
+;; already exists => {:sponsor ... :sponsor-guid ... :created? false}, untouched
+```
+
+Then attach it with `sync-sponsorships` (now idempotent — re-runs skip
+attached rows instead of duplicating). Full procedure in GUIDE.md
 "Adding a brand-new sponsor".
 
 Verify: `fetch-sponsorship-ids` shows each sponsor with the CSV's start

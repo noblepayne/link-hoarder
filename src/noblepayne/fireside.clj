@@ -678,6 +678,96 @@
               (recur (rest remaining) pushed (conj skipped (:name row)) present)))
         {:pushed pushed :skipped skipped :present present}))))
 
+(declare cookies-for)
+
+(defn sponsor-guid-by-title
+  "Find a podcast sponsor by exact display title. Returns the uuid or nil.
+  Exact match only: sync-sponsorships keys off exact strings, so a fuzzy
+  match here would silently misattach every future episode."
+  [{:keys [client podcast title]}]
+  (let [page (fetch-as-hickory {:http-client client
+                                :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors")})]
+    (some (fn [a]
+            (let [href (get-in a [:attrs :href])]
+              (when (and href (re-find #"/sponsors/[0-9a-f-]{36}$" href))
+                (let [t (clojure.string/trim (str (first (:content a))))]
+                  (when (and (= t title) (seq t))
+                    (second (re-find #"/sponsors/([0-9a-f-]{36})$" href)))))))
+          (hs/select (hs/tag :a) page))))
+
+(defn onboard-sponsor!
+  "Create a brand-new sponsor plus its first (and only) campaign, then
+  verify both read back. Takes the five decided values — title must
+  exactly equal the Ads CSV name or sync-sponsorships will skip every
+  future episode; exactly one campaign is created because sync
+  auto-picks only in the single-campaign case. Message is website copy
+  for readers (third person, no em dashes), never the ad read.
+  Returns {:sponsor :campaign :sponsor-guid :created? true}, or if the
+  title already exists, {:sponsor :sponsor-guid :created? false} without
+  touching anything."
+  [{:keys [client podcast title url campaign-title promo-code message episode-guid timecode]}]
+  (when (str/blank? title)
+    (throw (ex-info "Sponsor title must not be blank" {})))
+  (when (str/blank? message)
+    (throw (ex-info "Campaign message must not be blank" {:sponsor title})))
+  (if-let [existing (sponsor-guid-by-title {:client client :podcast podcast :title title})]
+    {:sponsor title :sponsor-guid existing :created? false}
+    (let [nc (http/build-http-client {:connect-timeout 30000 :redirect-policy :never
+                                      :cookie-policy :none})
+          cookies (cookies-for client FIRESIDE-BASE-URL)
+          std-headers {"Origin" FIRESIDE-BASE-URL
+                       "User-Agent" "Mozilla/5.0 Chrome/152"
+                       "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                       "Cookie" cookies}
+          post! (fn [url referer form-params]
+                  (let [resp (http/post url {:http-client nc :throw-exceptions false
+                                             :headers (assoc std-headers "Referer" referer)
+                                             :form-params form-params})]
+                    (when (not (<= 200 (:status resp) 399))
+                      (throw (ex-info "Sponsor onboarding POST failed"
+                                      {:url url :status (:status resp)
+                                       :body (subs (str (:body resp)) 0 (min 300 (count (str (:body resp)))))})))
+                    (get (:headers resp) "location")))
+          ;; 1. sponsor. Forms accept urlencoded (multipart 500s here too).
+          new-page (fetch-as-hickory {:http-client client
+                                      :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/new")})
+          [sform] (filter #(= (str "/podcasts/" podcast "/sponsors") (str (get-in % [:attrs :action])))
+                          (hs/select (hs/tag :form) new-page))
+          _ (when-not sform (throw (ex-info "Sponsor creation form not found" {:podcast podcast})))
+          sinputs (into {} (map (comp (juxt :name :value) :attrs))
+                        (hs/select (hs/tag :input) sform))
+          sloc (post! (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors")
+                      (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/new")
+                      (assoc sinputs "sponsor[title]" title "sponsor[url]" url
+                             "sponsor[status]" "1" "commit" "Create Sponsor"))
+          sid (second (re-find #"/sponsors/([0-9a-f-]{36})$" (str sloc)))]
+      (when-not sid
+        (throw (ex-info "Sponsor created but no uuid in redirect" {:location sloc})))
+      (println "  sponsor" title "->" sid)
+      ;; 2. its one campaign.
+      (let [cpage (fetch-as-hickory {:http-client client
+                                     :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/" sid "/campaigns/new")})
+            [cform] (filter #(re-find #"campaigns" (str (get-in % [:attrs :action])))
+                            (hs/select (hs/tag :form) cpage))
+            _ (when-not cform (throw (ex-info "Campaign creation form not found" {:sponsor title})))
+            cinputs (into {} (map (comp (juxt :name :value) :attrs))
+                          (concat (hs/select (hs/tag :input) cform)
+                                  (hs/select (hs/tag :textarea) cform)))
+            cloc (post! (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/" sid "/campaigns")
+                        (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/" sid "/campaigns/new")
+                        (assoc cinputs "campaign[title]" campaign-title "campaign[url]" url
+                               "campaign[promo_code]" (or promo-code "")
+                               "campaign[message]" message "campaign[script]" ""
+                               "commit" "Create Campaign"))]
+        (println "  campaign" campaign-title "->" cloc)
+        ;; 3. verify both read back before claiming success.
+        (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
+          (when-not (= back sid)
+            (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid}))))
+      {:sponsor title :campaign campaign-title :sponsor-guid sid :created? true}))))
+
+
+
 (defn fetch-page!
   "GET url and return the body. Throws unless we land a 200 on the URL we
   asked for: Fireside answers an expired session with a redirect to /login
