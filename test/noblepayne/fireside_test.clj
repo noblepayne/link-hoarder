@@ -880,6 +880,7 @@
                       (swap! lookups inc)
                       (when (and (= title "Hostinger") (> @lookups 1)) "8bfb1e79-a40f-4352-91cb-725df5f56da2"))
                     noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    noblepayne.fireside/add-sponsorship (fn [_] {:attached true})
                     http/post
                     (fn [url & _]
                       (swap! posted conj url)

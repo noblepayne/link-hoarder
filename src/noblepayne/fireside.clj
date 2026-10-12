@@ -763,10 +763,11 @@
         ;; 3. verify both read back before claiming success.
         (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
           (when-not (= back sid)
-            (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid}))))
-      {:sponsor title :campaign campaign-title :sponsor-guid sid :created? true}))))
-
-
+            (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid})))
+          (println "  attaching at" timecode)
+          (add-sponsorship {:client client :podcast podcast :episode-guid episode-guid
+                            :sponsor title :campaign campaign-title :timecode timecode}))
+        {:sponsor title :campaign campaign-title :sponsor-guid sid :created? true}))))
 
 (defn fetch-page!
   "GET url and return the body. Throws unless we land a 200 on the URL we
