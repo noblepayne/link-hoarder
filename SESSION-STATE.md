@@ -75,7 +75,9 @@ Deferred idea: separate `?members` tag set for the adfree/members feed — not n
   `1e843db6-f1a4-4ef4-a6bd-296f3adf894b`. Partial sync done 2026-10-18 (meta + links 22×2,
   3 default hosts). 2026-10-18 pm: new 14-tag set live in doc + pushed; guest Aaron Seigo
   attached (roster id 34606 — note: the person UUID 2d47300c… is NOT the checkbox value)
-  verified. Waiting on: workdir files (chapters/sponsors/audio).
+  verified. 2026-10-18 pm post-Brent full sync: meta, links 22×2, chapters 7/6,
+  sponsors (Nebula 1m3s + membership 0s), participants verified. /tmp/data exchange
+  file written. Still waiting on: audio upload + publish (both on Wes hold).
 
 ## Key IDs
 
