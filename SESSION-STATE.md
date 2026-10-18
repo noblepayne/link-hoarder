@@ -77,7 +77,9 @@ Deferred idea: separate `?members` tag set for the adfree/members feed — not n
   attached (roster id 34606 — note: the person UUID 2d47300c… is NOT the checkbox value)
   verified. 2026-10-18 pm post-Brent full sync: meta, links 22×2, chapters 7/6,
   sponsors (Nebula 1m3s + membership 0s), participants verified. /tmp/data exchange
-  file written. Still waiting on: audio upload + publish (both on Wes hold).
+  file written. 2026-10-18: LUP audio VERIFIED 7/7 but it took THREE passes
+  (twice-flow returned 0 chapters in bytes — twice is not always enough).
+  Still waiting on: adfree upload (Premium encoding), publish (Wes hold).
 
 ## Key IDs
 
