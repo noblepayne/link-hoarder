@@ -63,6 +63,14 @@ complete record. Start there, not in /tmp.
   path, optgroup/single-quote edge cases in scrapers.
 - Merge `ep687-audio-flow` → `main` after next episode proves the runbook.
 
+## 689 tag decision (approved 2026-10-18)
+
+Feed order, specific-first, house tail intact:
+`Aaron Seigo, KDE, Plasma 6.8, KDE documentary, KDE 4.0, Wayland, Elixir, Esri, Konveyor, RememberWindowPositions, open source, Linux Unplugged, Linux Podcast, Jupiter Broadcasting`.
+Doc paste (least-specific-first, pipeline net-reverses):
+`Jupiter Broadcasting, Linux Podcast, Linux Unplugged, open source, RememberWindowPositions, Konveyor, Esri, Elixir, Wayland, KDE 4.0, KDE documentary, Plasma 6.8, KDE, Aaron Seigo`.
+Deferred idea: separate `?members` tag set for the adfree/members feed — not needed for 689, revisit later.
+
 ## Key IDs
 
 - Hostinger sponsor `8bfb1e79-a40f-4352-91cb-725df5f56da2`, campaign
