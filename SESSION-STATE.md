@@ -71,6 +71,11 @@ Doc paste (least-specific-first, pipeline net-reverses):
 `Jupiter Broadcasting, Linux Podcast, Linux Unplugged, open source, RememberWindowPositions, Konveyor, Esri, Elixir, Wayland, KDE 4.0, KDE documentary, Plasma 6.8, KDE, Aaron Seigo`.
 Deferred idea: separate `?members` tag set for the adfree/members feed — not needed for 689, revisit later.
 
+**689 "First Kontact"** (in progress): LUP `b37eb1a6-c475-4f1a-b5e1-a38d9ef52627` / adfree
+  `1e843db6-f1a4-4ef4-a6bd-296f3adf894b`. Partial sync done 2026-10-18 (meta + links 19×2,
+  3 default hosts). Waiting on: Seigo person-add in dashboard (guest step), new tag paste
+  in doc (meta resync after), workdir files (chapters/sponsors/audio).
+
 ## Key IDs
 
 - Hostinger sponsor `8bfb1e79-a40f-4352-91cb-725df5f56da2`, campaign
