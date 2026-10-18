@@ -71,16 +71,10 @@ Doc paste (least-specific-first, pipeline net-reverses):
 `Jupiter Broadcasting, Linux Podcast, Linux Unplugged, open source, RememberWindowPositions, Konveyor, Esri, Elixir, Wayland, KDE 4.0, KDE documentary, Plasma 6.8, KDE, Aaron Seigo`.
 Deferred idea: separate `?members` tag set for the adfree/members feed — not needed for 689, revisit later.
 
-**689 "First Kontact"** (in progress): LUP `b37eb1a6-c475-4f1a-b5e1-a38d9ef52627` / adfree
-  `1e843db6-f1a4-4ef4-a6bd-296f3adf894b`. Partial sync done 2026-10-18 (meta + links 22×2,
-  3 default hosts). 2026-10-18 pm: new 14-tag set live in doc + pushed; guest Aaron Seigo
-  attached (roster id 34606 — note: the person UUID 2d47300c… is NOT the checkbox value)
-  verified. 2026-10-18 pm post-Brent full sync: meta, links 22×2, chapters 7/6,
-  sponsors (Nebula 1m3s + membership 0s), participants verified. /tmp/data exchange
-  file written. 2026-10-18: LUP audio VERIFIED 7/7 on pass 3, adfree VERIFIED 6/6
-  on pass 3 (twice-flow returned 0 chapters in bytes both feeds — twice is a
-  minimum, not a guarantee). WAVs deleted. /tmp/data EDN (publisher shape) +
-  /tmp/data-desc-689.txt written. ONLY publish remains (Wes approval).
+**689 "First Kontact" — LIVE 2026-10-18 15:30 PT both feeds.** Meta, links 22×2,
+chapters 7/6, sponsors (Nebula + membership), 3 hosts + Seigo (34606), audio
+verified 7/7 + 6/6 (3 passes each — twice is a minimum, not a guarantee).
+Public-confirmed both pages. /tmp/data EDN + /tmp/data-desc-689.txt current.
 
 ## Key IDs
 
