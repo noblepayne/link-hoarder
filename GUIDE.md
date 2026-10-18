@@ -232,7 +232,7 @@ done from code on 2026-10-04 and every step verified live:
    - `title` follows the product-name pattern (`Managed Nebula`, so
      `Connecten Internet` — the name the show itself uses).
    - `promo_code` is the offer code (`Jupiter35`).
-   - `message` is the read copy, taken from the show notes.
+   - `message` is website copy for readers, NOT the ad read: no first-person, describe the product and the offer (transcript read is source material only).
    - `script` may be blank (Nebula's is).
    - Create **exactly one** campaign. `sync-sponsorships` auto-picks the
      campaign only when there is one; a second forces an explicit

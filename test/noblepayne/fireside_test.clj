@@ -4,6 +4,7 @@
    is what needs exercising against a real Fireside, not these."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
+            [hato.client :as http]
             [noblepayne.fireside :as f]))
 
 ;; ------------------------------------------- pre-existing regressions
@@ -386,3 +387,523 @@
     (is (= "00:01:01" (:start-timecode row)))
     (is (= 61.66 (:start-seconds row)))
     (is (= "1m 1s" (f/timecode->words (:start-timecode row))))))
+
+(deftest rewrite-s3-key-test
+  (testing "replaces the trailing segment with a fresh uuid.mp3"
+    (let [k1 (f/rewrite-s3-key "episodes/abc/${filename}")
+          k2 (f/rewrite-s3-key "episodes/abc/${filename}")]
+      (is (re-find #"^episodes/abc/[0-9a-f-]{36}\.mp3$" k1))
+      (is (not= k1 k2) "fresh uuid per upload")))
+
+  (testing "pop-append semantics: whatever the tail is, it goes"
+    (is (re-find #"^a/b/[0-9a-f-]{36}\.mp3$"
+                 (f/rewrite-s3-key "a/b/oldname.mp3")))))
+
+(deftest parse-ffprobe-chapters-test
+  (let [flat (str "chapters.chapter.0.start_time=\"0.000000\"\n"
+                  "chapters.chapter.0.tags.title=\"Intro\"\n"
+                  "chapters.chapter.1.start_time=\"90.110000\"\n"
+                  "chapters.chapter.1.tags.title=\"KDE Week\"\n")]
+    (testing "parses starts and titles by index"
+      (is (= [{:start 0.0 :title "Intro"}
+              {:start 90.11 :title "KDE Week"}]
+             (f/parse-ffprobe-chapters flat))))
+
+    (testing "empty output parses to empty"
+      (is (= [] (f/parse-ffprobe-chapters ""))))))
+
+(deftest compare-chapters-test
+  (let [expected [{:name "Intro" :position-seconds 0.0}
+                  {:name "KDE Week" :position-seconds 90.11}]]
+    (testing "passes on title match plus starts within tolerance"
+      ;; 50ms of encoder delay must not fail the check
+      (is (true? (f/compare-chapters
+                  expected
+                  [{:title "Intro" :start 0.05}
+                   {:title "KDE Week" :start 90.2}]))))
+
+    (testing "count mismatch throws with both title lists"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"count"
+                            (f/compare-chapters expected
+                                                [{:title "Intro" :start 0.0}]))))
+
+    (testing "title mismatch throws"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"title"
+                            (f/compare-chapters
+                             expected
+                             [{:title "Intro" :start 0.0}
+                              {:title "Wrong" :start 90.11}]))))
+
+    (testing "start drift past tolerance throws with deltas"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"drift"
+                            (f/compare-chapters
+                             expected
+                             [{:title "Intro" :start 0.0}
+                              {:title "KDE Week" :start 99.0}]))))))
+
+(deftest multipart-bytes-order-test
+  (testing "Content-Type field travels before the file part, file last"
+    ;; Regression guard: S3 ignores every field after the file part, so a
+    ;; trailing Content-Type fails the policy with a 403 even though the
+    ;; bytes are present. Proven live: ct-last 403s, ct-first 201s.
+    (let [s (String. ^bytes (:body (f/multipart-bytes
+                                    {"key" "ep/x.mp3" "policy" "abc"}
+                                    "x.mp3" (.getBytes "DATA"))))]
+      (is (< (.indexOf s "name=\"key\"") (.indexOf s "name=\"Content-Type\"")))
+      (is (< (.indexOf s "name=\"Content-Type\"") (.indexOf s "name=\"file\"")))
+      (is (re-find #"name=\"file\"; filename=\"x\.mp3\"" s))
+      (is (re-find #"audio/mp3\r\n" s))))
+
+  (testing "a presign-supplied Content-Type wins over the hardcoded one"
+    (let [s (String. ^bytes (:body (f/multipart-bytes
+                                    {"key" "k" "Content-Type" "video/mp4"}
+                                    "x.mp4" (.getBytes "D"))))]
+      (is (= 1 (count (re-seq #"name=\"Content-Type\"" s))))
+      (is (re-find #"video/mp4\r\n" s))
+      (is (not (re-find #"audio/mp3" s))))))
+
+(deftest successful-controls-test
+  (let [sc (fn [form] ((deref (resolve 'noblepayne.fireside/successful-controls)) {:tag :root :content [(assoc-in form [:attrs :id] "f")]} "f"))
+        form {:tag :form
+              :attrs {}
+              :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "TOK"} :content nil}
+                        {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"} :content nil}
+                        {:tag :input :attrs {:type "checkbox" :name "episode[host_ids][]" :value "1" :checked "checked"} :content nil}
+                        {:tag :input :attrs {:type "checkbox" :name "episode[host_ids][]" :value "2"} :content nil}
+                        {:tag :input :attrs {:type "radio" :name "episode[itunes_episode_type]" :value "full" :checked "checked"} :content nil}
+                        {:tag :input :attrs {:type "radio" :name "episode[itunes_episode_type]" :value "bonus"} :content nil}
+                        {:tag :textarea :attrs {:name "episode[description]"} :content ["Desc"]}
+                        {:tag :select :attrs {:name "episode[status]"}
+                         :content [{:tag :option :attrs {:value "0"}} {:tag :option :attrs {:value "1" :selected "selected"}}]}]}]
+    (testing "keeps hidden, text, checked boxes, textarea content, selected options"
+      (let [m (sc form)]
+        (is (= "TOK" (get m "authenticity_token")))
+        (is (= "T" (get m "episode[title]")))
+        (is (= "1" (get m "episode[host_ids][]")))
+        (is (= "full" (get m "episode[itunes_episode_type]")))
+        (is (= "Desc" (get m "episode[description]")))
+        (is (= "1" (get m "episode[status]")))))
+
+    (testing "drops unchecked boxes and unselected options"
+      (let [m (sc form)]
+        (is (= "1" (get m "episode[host_ids][]")))))
+    (testing "multi-value names accumulate into vectors"
+      (let [m (sc {:tag :form
+                   :attrs {}
+                   :content [{:tag :input :attrs {:type "checkbox" :name "h" :value "1" :checked "checked"}}
+                             {:tag :input :attrs {:type "checkbox" :name "h" :value "2" :checked "checked"}}]})]
+        (is (= ["1" "2"] (get m "h")))))
+    (testing "inputs outside the form element with a matching form= attribute are included"
+      ;; Regression guard: Rails renders ignore_cover/ignore_chapters
+      ;; outside the <form> with form=<id>. A subtree-only scrape misses
+      ;; them and the update 500s.
+      (let [sc2 (fn [page id] ((deref (resolve 'noblepayne.fireside/successful-controls)) page id))
+            page {:tag :root
+                  :content [{:tag :form
+                             :attrs {:id "f"}
+                             :content [{:tag :input :attrs {:type "hidden" :name "a" :value "1"}}]}
+                            {:tag :input :attrs {:type "hidden" :name "episode[ignore_cover]" :value "0" :form "f"}}]}]
+        (is (= {"a" "1" "episode[ignore_cover]" "0"} (sc2 page "f")))))))
+
+(deftest multipart-fields-bytes-test
+  (testing "encodes fields with repeated parts for multi-values"
+    (let [{:keys [body boundary]} (f/multipart-fields-bytes
+                                   {"a" "1" "h" ["x" "y"]})
+          s (String. ^bytes body)]
+      (is (re-find #"name=\"a\"\r\n\r\n1\r\n" s))
+      (is (= 2 (count (re-seq #"name=\"h\"\r\n" s))))
+      (is (re-find (re-pattern (str "--" boundary "--\r\n")) s)))))
+
+(deftest stage-temp-url-test
+  (testing "appends the filename fragment"
+    (is (= "https://x/y.mp3#filename=a%20b.mp3"
+           (f/stage-temp-url "https://x/y.mp3" "a b.mp3"))))
+  (testing "strips a pre-existing fragment instead of stacking"
+    (is (= "https://x/y.mp3#filename=new.mp3"
+           (f/stage-temp-url "https://x/y.mp3#filename=old.mp3" "new.mp3"))))
+  (testing "blank stays blank"
+    (is (= "" (f/stage-temp-url "" "x.mp3")))
+    (is (= "" (f/stage-temp-url nil "x.mp3")))))
+
+(deftest cookies-for-test
+  (testing "renders stored cookies as a Cookie header value"
+    (let [c (http/build-http-client {:cookie-policy :all})
+          mgr (.orElse (.cookieHandler ^java.net.http.HttpClient c) nil)
+          store (.getCookieStore ^java.net.CookieManager mgr)
+          uri (java.net.URI/create "https://app.fireside.fm/x")]
+      (.add store uri (java.net.HttpCookie. "u" "abc123"))
+      (.add store uri (java.net.HttpCookie. "_blackbird_session" "def456"))
+      (let [h (f/cookies-for c "https://app.fireside.fm/podcasts/p/episodes/g/edit")]
+        (is (re-find #"u=abc123" h))
+        (is (re-find #"_blackbird_session=def456" h))
+        (is (re-find #"; " h))))))
+
+(deftest temp-file-url-test
+  (testing "builds the browser-shaped URL with raw slashes"
+    (is (= "https://s3.amazonaws.com/temp.fireside.fm/uploads/abc/def.mp3"
+           (f/temp-file-url "https://s3.amazonaws.com/temp.fireside.fm" "uploads/abc/def.mp3"))))
+  (testing "tolerates a trailing slash on the endpoint"
+    (is (= "https://s3.amazonaws.com/temp.fireside.fm/uploads/abc/def.mp3"
+           (f/temp-file-url "https://s3.amazonaws.com/temp.fireside.fm/" "uploads/abc/def.mp3"))))
+  (testing "never percent-encodes the key"
+    (is (not (re-find #"%" (f/temp-file-url "https://e" "uploads/a/b.mp3"))))))
+
+(deftest required-episode-keys-test
+  (testing "host/guest arrays are not required: roster-less podcasts render zero such inputs"
+    ;; Regression guard: the adfree episode form carries no host_ids[] or
+    ;; guest_ids[] inputs at all, and requiring them refused every POST.
+    (is (not (contains? f/required-episode-keys "episode[host_ids][]")))
+    (is (not (contains? f/required-episode-keys "episode[guest_ids][]"))))
+  (testing "title/status/publish schedule always required"
+    (is (every? #(contains? f/required-episode-keys %)
+                ["episode[title]" "episode[status]"
+                 "episode[publish_at(1i)]" "episode[publish_at(5i)]"
+                 "episode[mp3_upload_url]"]))))
+
+(deftest mp3-status-error-test
+  (testing "preserves processing failure fields instead of idle-success"
+    ;; Highest-leverage audit test: the dropped error/error_message once
+    ;; made failed transcodes read as success everywhere downstream.
+    (with-redefs [noblepayne.fireside/fetch-page!
+                  (fn [_ _ _] "{\"processing\":false,\"error\":true,\"error_message\":\"CarrierWave::DownloadError: gone\"}")]
+      (let [st (f/mp3-status {:client nil :podcast "p" :episode-guid "g"})]
+        (is (false? (:processing st)))
+        (is (true? (:error st)))
+        (is (= "CarrierWave::DownloadError: gone" (:error-message st)))
+        (is (nil? (:url st)))))))
+
+(deftest await-processed-test
+  (testing "returns once the url appears"
+    (let [calls (atom 0)]
+      (with-redefs [noblepayne.fireside/mp3-status
+                    (fn [_] (swap! calls inc)
+                      (if (< @calls 3)
+                        {:processing false :url nil}
+                        {:processing false :url "https://x/y.mp3"}))]
+        (let [st (f/await-processed {:client nil :podcast "p" :episode-guid "g"}
+                                    :interval-ms 1 :deadline-ms 5000)]
+          (is (= "https://x/y.mp3" (:url st)))
+          (is (= 3 @calls))))))
+  (testing "throws the processing failure with its message"
+    (with-redefs [noblepayne.fireside/mp3-status
+                  (fn [_] {:processing false :url nil :error true :error-message "boom"})]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"processing failed"
+                            (f/await-processed {:client nil :podcast "p" :episode-guid "g"}
+                                               :interval-ms 1 :deadline-ms 5000)))))
+  (testing "times out instead of returning url-less success"
+    (with-redefs [noblepayne.fireside/mp3-status
+                  (fn [_] {:processing false :url nil})]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Timed out"
+                            (f/await-processed {:client nil :podcast "p" :episode-guid "g"}
+                                               :interval-ms 1 :deadline-ms 50))))))
+
+(deftest attach-refuses-incomplete-scrape-test
+  (testing "never POSTs when required fields are missing from the scrape"
+    (let [posted (atom false)
+          page {:tag :root :content [{:tag :form :attrs {:id "edit_episode_g"}
+                                      :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                    noblepayne.fireside/curl-post-form! (fn [_] (reset! posted true) {:status 302})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing to POST"
+                              (f/attach-mp3! {:client nil :podcast "p" :episode-guid "g"
+                                              :temp-url "" :file-name "e.mp3"})))
+        (is (false? @posted))))))
+
+(deftest episode-lock-test
+  (testing "second claim refuses while the first is held"
+    (let [g "test-lock-guid"]
+      (try
+        (let [lock (f/acquire-episode-lock! g)]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already running"
+                                (f/acquire-episode-lock! g)))
+          (f/release-episode-lock! lock)
+          (is (some? (f/acquire-episode-lock! g)))
+          (f/release-episode-lock! (f/episode-lock-file g)))
+        (finally
+          (.delete (f/episode-lock-file g)))))))
+
+(deftest schedule-episode-validation-test
+  (testing "unknown visibility is refused before any HTTP"
+    (let [called (atom false)]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] (reset! called true) nil)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown visibility"
+                              (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                                    :status :everywhere :publish-at [2026 10 4 13 0]})))
+        (is (false? @called)))))
+  (testing "off-step minutes are refused, not rounded"
+    (doseq [mi [1 7 30 44 59]]
+      (when-not (contains? #{0 15 30 45} mi)
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"15-minute"
+                              (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                                    :status :private :publish-at [2026 10 4 13 mi]}))))))
+  (testing "visibility keywords map to the documented form values"
+    (is (= {"public" "1" "private" "0" "unlisted" "2"}
+           (into {} (map (fn [[k v]] [(name k) v]) f/episode-status-values))))))
+
+(deftest schedule-episode-post-test
+  (testing "encodes selects exactly as the page carries them and verifies by re-read"
+    (let [sent (atom nil)
+          page {:tag :root
+                :content [{:tag :form :attrs {:id "edit_episode_g"}
+                           :content [{:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                     {:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                     {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"}}
+                                     {:tag :textarea :attrs {:name "episode[description]"} :content ["D"]}
+                                     {:tag :textarea :attrs {:name "episode[subtitle]"} :content ["S"]}
+                                     {:tag :input :attrs {:type "hidden" :name "episode[mp3_upload_url]" :value ""}}
+                                     {:tag :select :attrs {:name "episode[status]"}
+                                      :content [{:tag :option :attrs {:value "0" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(1i)]"}
+                                      :content [{:tag :option :attrs {:value "2026" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(2i)]"}
+                                      :content [{:tag :option :attrs {:value "10" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(3i)]"}
+                                      :content [{:tag :option :attrs {:value "4" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(4i)]"}
+                                      :content [{:tag :option :attrs {:value "13" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(5i)]"}
+                                      :content [{:tag :option :attrs {:value "00" :selected "selected"}}]}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                    noblepayne.fireside/post-episode-form!
+                    (fn [{:keys [params]}] (reset! sent params) {:post-status 302})]
+        ;; re-read echoes the written values: override the fixture on 2nd+ reads
+        (with-redefs [noblepayne.fireside/successful-controls
+                      (let [orig (deref #'noblepayne.fireside/successful-controls)]
+                        (fn [pg id]
+                          (let [m (orig pg id)]
+                            (if @sent (merge m (select-keys @sent ["episode[status]"
+                                                                   "episode[publish_at(1i)]" "episode[publish_at(2i)]"
+                                                                   "episode[publish_at(3i)]" "episode[publish_at(4i)]"
+                                                                   "episode[publish_at(5i)]"]))
+                                m))))]
+          (is (true? (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                           :status :unlisted :publish-at [2026 10 5 9 30]})))
+          (is (= {"episode[status]" "2"
+                  "episode[publish_at(1i)]" "2026" "episode[publish_at(2i)]" "10"
+                  "episode[publish_at(3i)]" "5" "episode[publish_at(4i)]" "09"
+                  "episode[publish_at(5i)]" "30"}
+                 (select-keys @sent ["episode[status]" "episode[publish_at(1i)]" "episode[publish_at(2i)]"
+                                     "episode[publish_at(3i)]" "episode[publish_at(4i)]" "episode[publish_at(5i)]"]))))))))
+
+(deftest schedule-episode-range-test
+  (testing "out-of-range slots and bad shapes throw before any HTTP"
+    (let [called (atom false)]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] (reset! called true) nil)]
+        (doseq [bad [[2026 13 4 13 0] [2026 10 32 13 0] [2026 10 4 24 0]
+                     [1999 10 4 13 0] [2026 10 4 13] [2026 10 4]]]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                             :status :private :publish-at bad}))))
+        (is (false? @called))))))
+
+(deftest upload-rollback-test
+  (testing "verification failure re-stages the pre-run temp url, then rethrows the original"
+    (let [staged (atom nil)
+          csv (java.io.File/createTempFile "chapters" ".csv")]
+      (spit (.getPath csv) "number,position_seconds,timecode,name\n1,0.00,00:00:00,Intro\n")
+      (with-redefs [noblepayne.fireside/current-temp-url (fn [_] "https://s3.example/old.mp3")
+                    noblepayne.fireside/upload-mp3 (fn [_] {:processing false :url "https://x/new.mp3"})
+                    noblepayne.fireside/download-mp3! (fn [_ _] "/tmp/x.mp3")
+                    noblepayne.fireside/ffprobe-chapters (fn [_] [{:title "Nope" :start 0.0}])
+                    noblepayne.fireside/attach-mp3! (fn [{:keys [temp-url]}] (reset! staged temp-url) true)
+                    noblepayne.fireside/acquire-episode-lock! (fn [_] :lock)
+                    noblepayne.fireside/release-episode-lock! (fn [_] nil)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"mismatch"
+                              (f/upload-and-verify-mp3 {:client nil :podcast "p" :episode-guid "g"
+                                                        :mp3-path "/tmp/x.mp3"
+                                                        :chapters-file (.getPath csv)})))
+        (is (= "https://s3.example/old.mp3" @staged))))))
+
+(deftest s3-upload-form-test
+  (testing "scrapes presign url and entity-decoded fields off the edit page"
+    (with-redefs [noblepayne.fireside/fetch-page!
+                  (fn [_ _ _] (str "<form id=\"episode_mp3_form_ggg\" "
+                                   "data-url=\"https://s3.example/up\" "
+                                   "data-form-data=\"{&quot;key&quot;:&quot;uploads/abc/${filename}&quot;}\">"))]
+      (let [{:keys [url fields]} (f/s3-upload-form {:client nil :podcast "p" :episode-guid "ggg"})]
+        (is (= "https://s3.example/up" url))
+        (is (= "uploads/abc/${filename}" (get fields "key")))))))
+
+(deftest decode-entities-order-test
+  (testing "&amp; decodes last so literal entities survive one level"
+    (is (= "&lt;" (f/decode-html-entities "&amp;lt;")))
+    (is (= "<&>" (f/decode-html-entities "&lt;&amp;&gt;")))))
+
+(deftest set-participants-test
+  (let [page {:tag :root
+              :content [{:tag :form :attrs {:id "edit_episode_g"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                   {:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                   {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"}}
+                                   {:tag :textarea :attrs {:name "episode[description]"} :content ["D"]}
+                                   {:tag :textarea :attrs {:name "episode[subtitle]"} :content ["S"]}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[status]" :value "0"}}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[mp3_upload_url]" :value ""}}
+                                   {:tag :select :attrs {:name "episode[publish_at(1i)]"}
+                                    :content [{:tag :option :attrs {:value "2026" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(2i)]"}
+                                    :content [{:tag :option :attrs {:value "10" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(3i)]"}
+                                    :content [{:tag :option :attrs {:value "4" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(4i)]"}
+                                    :content [{:tag :option :attrs {:value "13" :selected "selected"}}]}
+                                   {:tag :select :attrs {:name "episode[publish_at(5i)]"}
+                                    :content [{:tag :option :attrs {:value "00" :selected "selected"}}]}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[host_ids][]" :value ""}}
+                                   {:tag :input :attrs {:type "hidden" :name "episode[guest_ids][]" :value ""}}]}]}]
+    (testing "defaults to the three regular hosts with no guests"
+      (let [sent (atom nil)]
+        (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                      noblepayne.fireside/post-episode-form!
+                      (fn [{:keys [params]}] (reset! sent params) {:post-status 302})]
+          (with-redefs [noblepayne.fireside/successful-controls
+                        (let [orig (deref #'noblepayne.fireside/successful-controls)]
+                          (fn [pg id]
+                            (let [m (orig pg id)]
+                              (if @sent (merge m (select-keys @sent ["episode[host_ids][]" "episode[guest_ids][]"])) m))))]
+            (is (true? (f/set-participants! {:client nil :podcast "p" :episode-guid "g"})))
+            (is (= ["" "1848" "1849" "2108"] (get @sent "episode[host_ids][]")))
+            (is (= [""] (get @sent "episode[guest_ids][]")))))))
+    (testing "explicit guests ride along after the blank"
+      (let [sent (atom nil)]
+        (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                      noblepayne.fireside/post-episode-form!
+                      (fn [{:keys [params]}] (reset! sent params) {:post-status 302})
+                      noblepayne.fireside/await-fields! (fn [& _] true)]
+          (is (true? (f/set-participants! {:client nil :podcast "p" :episode-guid "g"
+                                           :guest-ids ["18676"]})))
+          (is (= ["" "18676"] (get @sent "episode[guest_ids][]"))))))))
+
+(deftest await-fields-order-test
+  (testing "multi-values compare order-insensitively (roster order, not submit order)"
+    (let [page {:tag :root
+                :content [{:tag :form :attrs {:id "f"}
+                           :content [{:tag :input :attrs {:type "checkbox" :name "h" :value "2" :checked "checked"}}
+                                     {:tag :input :attrs {:type "checkbox" :name "h" :value "1" :checked "checked"}}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)]
+        (is (true? ((deref #'noblepayne.fireside/await-fields!)
+                    nil "http://x" "f" {"h" ["1" "2"]} "g")))))))
+(testing "scalar stored vs one-vector expected still matches"
+  (let [page {:tag :root
+              :content [{:tag :form :attrs {:id "f"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "a" :value ""}}]}]}]
+    (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)]
+      (is (true? ((deref #'noblepayne.fireside/await-fields!)
+                  nil "http://x" "f" {"a" [""]} "g"))))))
+(testing "persistent mismatch throws with expected-vs-stored"
+  (let [page {:tag :root
+              :content [{:tag :form :attrs {:id "f"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "a" :value "old"}}]}]}]
+    (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)]
+      (try
+        ((deref #'noblepayne.fireside/await-fields!) nil "http://x" "f" {"a" "new"} "g")
+        (is false "should have thrown")
+        (catch clojure.lang.ExceptionInfo e
+          (is (= {"a" {:expected "new" :stored "old"}} (:mismatched (ex-data e)))))))))
+
+(deftest session-expiry-login-query-test
+  (testing "a /login?query redirect throws session-expired, not a 60s mismatch"
+    (let [page {:tag :root
+                :content [{:tag :form :attrs {:id "edit_episode_g"}
+                           :content [{:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                     {:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                     {:tag :input :attrs {:type "text" :name "episode[title]" :value "T"}}
+                                     {:tag :textarea :attrs {:name "episode[description]"} :content ["D"]}
+                                     {:tag :textarea :attrs {:name "episode[subtitle]"} :content ["S"]}
+                                     {:tag :input :attrs {:type "hidden" :name "episode[status]" :value "0"}}
+                                     {:tag :input :attrs {:type "hidden" :name "episode[mp3_upload_url]" :value ""}}
+                                     {:tag :select :attrs {:name "episode[publish_at(1i)]"}
+                                      :content [{:tag :option :attrs {:value "2026" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(2i)]"}
+                                      :content [{:tag :option :attrs {:value "10" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(3i)]"}
+                                      :content [{:tag :option :attrs {:value "4" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(4i)]"}
+                                      :content [{:tag :option :attrs {:value "13" :selected "selected"}}]}
+                                     {:tag :select :attrs {:name "episode[publish_at(5i)]"}
+                                      :content [{:tag :option :attrs {:value "00" :selected "selected"}}]}]}]}]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory (fn [_] page)
+                    noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    noblepayne.fireside/curl-post-form!
+                    (fn [_] {:post-status 302 :location "https://app.fireside.fm/login?return_to=%2F" :body ""})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Session expired"
+                              (f/schedule-episode! {:client nil :podcast "p" :episode-guid "g"
+                                                    :status :private :publish-at [2026 10 4 13 0]})))))))
+
+(deftest cookies-for-guard-test
+  (testing "bad client fails clean, never raw NPE"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Bad Fireside client"
+                          (f/cookies-for nil "https://x")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Bad Fireside client"
+                          (f/cookies-for {} "https://x")))))
+
+(deftest upload-twice-and-verify-test
+  (testing "uploads twice, verifies the final bytes once"
+    (let [uploads (atom 0)
+          seen-prev (atom [])
+          csv (java.io.File/createTempFile "chapters" ".csv")]
+      (spit (.getPath csv) "number,position_seconds,timecode,name\n1,0.00,00:00:00,Intro\n")
+      (with-redefs [noblepayne.fireside/current-temp-url (fn [_] nil)
+                    noblepayne.fireside/upload-mp3
+                    (fn [{:keys [previous-url]}]
+                      (swap! uploads inc)
+                      (swap! seen-prev conj previous-url)
+                      {:processing false :url (str "https://x/pass" @uploads ".mp3")})
+                    noblepayne.fireside/download-mp3! (fn [_ _] "/tmp/x.mp3")
+                    noblepayne.fireside/ffprobe-chapters (fn [_] [{:title "Intro" :start 0.0}])
+                    noblepayne.fireside/acquire-episode-lock! (fn [_] :lock)
+                    noblepayne.fireside/release-episode-lock! (fn [_] nil)]
+        (let [{:keys [status report]} (f/upload-twice-and-verify-mp3 {:client nil :podcast "p" :episode-guid "g"
+                                                                      :mp3-path "/tmp/x.mp3"
+                                                                      :chapters-file (.getPath csv)})]
+          (is (= 2 @uploads))
+          (is (= [nil "https://x/pass1.mp3"] @seen-prev))
+          (is (= "https://x/pass2.mp3" (:url status)))
+          (is (true? (:verified report))))))))
+
+(deftest onboard-sponsor-test
+  (testing "creates sponsor + one campaign, verifies readback"
+    (let [lookups (atom 0)
+          sform {:tag :form :attrs {:action "/podcasts/p/sponsors"}
+                 :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}
+          cform {:tag :form :attrs {:action "/podcasts/p/sponsors/SID/campaigns"}
+                 :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}
+          sponsors-page {:tag :root :content []}
+          posted (atom [])]
+      (with-redefs [noblepayne.fireside/fetch-as-hickory
+                    (fn [{:keys [url]}]
+                      (cond (re-find #"campaigns/new" url) {:tag :root :content [cform]}
+                            (re-find #"sponsors/new" url) {:tag :root :content [sform]}
+                            :else sponsors-page))
+                    noblepayne.fireside/sponsor-guid-by-title
+                    (fn [{:keys [title]}]
+                      (swap! lookups inc)
+                      (when (and (= title "Hostinger") (> @lookups 1)) "8bfb1e79-a40f-4352-91cb-725df5f56da2"))
+                    noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    noblepayne.fireside/add-sponsorship (fn [_] {:attached true})
+                    http/post
+                    (fn [url & _]
+                      (swap! posted conj url)
+                      (cond (re-find #"sponsors$" url)
+                            {:status 302 :headers {"location" "https://x/podcasts/p/sponsors/8bfb1e79-a40f-4352-91cb-725df5f56da2"}}
+                            (re-find #"campaigns$" url)
+                            {:status 302 :headers {"location" "https://x/campaigns/94e7e1f4-80fe-4cea-a39d-d6521027f2f6"}}
+                            :else {:status 500 :headers {}}))]
+        (let [r (f/onboard-sponsor! {:client nil :podcast "p" :title "Hostinger"
+                                     :url "https://hostinger.com/unplugged"
+                                     :campaign-title "Hostinger AI Builder"
+                                     :promo-code "UNPLUGGED" :message "Try it."})]
+          (is (= "8bfb1e79-a40f-4352-91cb-725df5f56da2" (:sponsor-guid r)))
+          (is (true? (:created? r)))
+          (is (= 2 (count @posted)))))))
+  (testing "existing sponsor returns without touching anything"
+    (let [posted (atom 0)]
+      (with-redefs [noblepayne.fireside/sponsor-guid-by-title (fn [_] "EXISTING")
+                    noblepayne.fireside/cookies-for (fn [_ _] "c=v")
+                    http/post (fn [& _] (swap! posted inc) {:status 302 :headers {}})]
+        (let [r (f/onboard-sponsor! {:client nil :podcast "p" :title "Nebula"
+                                     :url "https://x" :campaign-title "C"
+                                     :promo-code "" :message "M"})]
+          (is (false? (:created? r)))
+          (is (= "EXISTING" (:sponsor-guid r)))
+          (is (zero? @posted)))))))
