@@ -374,6 +374,32 @@
         (is (instance? clojure.lang.MapEntry entry))
         (is (sequential? entry))))))
 
+(deftest add-sponsorship-campaign-id-bypass-test
+  ;; Regression guard for 2026-10-25: Fireside's /update_campaigns started
+  ;; returning 422 for every sponsor on every episode, so fetch-campaigns
+  ;; could not resolve a campaign name. :campaign-id must post the given id
+  ;; without touching fetch-campaigns.
+  (let [posted (atom nil)
+        campaigns-called (atom false)]
+    (with-redefs [f/sponsorship-form (fn [_] {:action "/podcasts/p/episodes/g/sponsorships"
+                                              :auth-token "T"
+                                              :sponsors {"2155" "Nebula"}})
+                  f/fetch-campaigns (fn [& _] (reset! campaigns-called true)
+                                      (throw (ex-info "should not be called" {})))
+                  http/post (fn [_url opts] (reset! posted (:form-params opts))
+                              {:status 302})]
+      (let [r (f/add-sponsorship {:client nil :podcast "p" :episode-guid "g"
+                                  :sponsor "Nebula" :campaign "Managed Nebula"
+                                  :campaign-id "2069" :timecode "1m 13s"})]
+        (testing "posts the supplied campaign id"
+          (is (= "2069" (get @posted "sponsorship[campaign_id]")))
+          (is (= "2155" (get @posted "sponsorship[sponsor_id]"))))
+        (testing "never consults the broken endpoint"
+          (is (false? @campaigns-called)))
+        (testing "result echoes the campaign id"
+          (is (= "2069" (:campaign-id r)))
+          (is (= "Managed Nebula" (:campaign r))))))))
+
 (deftest sync-sponsorships-key-access-test
   ;; Regression guard: sync-sponsorships read :start_timecode while
   ;; load-ads-csv emits :start-timecode, so every real row hit the nil

@@ -499,8 +499,13 @@
   strings an operator would read off the screen.
 
   With no :campaign, the sponsor's only campaign is used - which is the
-  normal case, since most sponsors have exactly one."
-  [{:keys [client podcast episode-guid sponsor campaign timecode]}]
+  normal case, since most sponsors have exactly one.
+
+  Pass :campaign-id to skip the dropdown lookup. Needed when Fireside's
+  /update_campaigns endpoint is broken server-side: on 2026-10-25 it
+  returned 422 for every sponsor and every episode, including already
+  published ones, so campaign names could not be resolved at all."
+  [{:keys [client podcast episode-guid sponsor campaign campaign-id timecode]}]
   (let [{:keys [action auth-token sponsors]} (sponsorship-form {:client client
                                                                 :podcast podcast
                                                                 :episode-guid episode-guid})
@@ -511,32 +516,38 @@
         sponsor-id (key (first (filter (fn [[_ label]] (= label sponsor)) sponsors)))]
     (when-not sponsor-id
       (throw (ex-info "Unknown sponsor" {:sponsor sponsor :known (vec (vals sponsors))})))
-    (let [campaigns (fetch-campaigns client podcast episode-guid sponsor-id)
-          ;; Don't guess: picking an arbitrary campaign is the exact
-          ;; failure this whole function exists to avoid.
-          wanted (or campaign
-                     (when (= 1 (count campaigns))
-                       (first (vals campaigns)))
-                     (throw (ex-info "Sponsor has several campaigns; pass :campaign"
-                                     {:sponsor sponsor
-                                      :campaigns (vec (vals campaigns))})))
-          campaign-id (key (first (filter (fn [[_ label]] (= label wanted)) campaigns)))]
-      (when-not campaign-id
-        (throw (ex-info "Unknown campaign"
-                        {:campaign wanted :sponsor sponsor
-                         :known (vec (vals campaigns))})))
-      (let [response (http/post (str FIRESIDE-BASE-URL action)
-                                {:http-client client
-                                 ;; urlencoded, not multipart - see
-                                 ;; set-sponsorship-timecode
-                                 :form-params {"authenticity_token" auth-token
-                                               "sponsorship[timecode_as_words]" timecode
-                                               "sponsorship[sponsor_id]" sponsor-id
-                                               "sponsorship[campaign_id]" campaign-id}})]
+    (let [;; A supplied :campaign-id skips fetch-campaigns entirely.
+          campaign-id (or campaign-id
+                          (let [campaigns (fetch-campaigns client podcast episode-guid sponsor-id)
+                                ;; Don't guess: picking an arbitrary campaign is
+                                ;; the exact failure this function exists to avoid.
+                                wanted (or campaign
+                                           (when (= 1 (count campaigns))
+                                             (first (vals campaigns)))
+                                           (throw (ex-info "Sponsor has several campaigns; pass :campaign"
+                                                           {:sponsor sponsor
+                                                            :campaigns (vec (vals campaigns))})))
+                                id (key (first (filter (fn [[_ label]] (= label wanted)) campaigns)))]
+                            (when-not id
+                              (throw (ex-info "Unknown campaign"
+                                              {:campaign wanted :sponsor sponsor
+                                               :known (vec (vals campaigns))})))
+                            id))
+          label (or campaign campaign-id)]
+      (if-let [response (http/post (str FIRESIDE-BASE-URL action)
+                                   {:http-client client
+                                    ;; urlencoded, not multipart - see
+                                    ;; set-sponsorship-timecode
+                                    :form-params {"authenticity_token" auth-token
+                                                  "sponsorship[timecode_as_words]" timecode
+                                                  "sponsorship[sponsor_id]" sponsor-id
+                                                  "sponsorship[campaign_id]" campaign-id}})]
         (if (<= 200 (:status response) 302)
-          {:sponsor sponsor :campaign wanted :timecode timecode}
+          {:sponsor sponsor :campaign label :campaign-id campaign-id :timecode timecode}
           (throw (ex-info "Failed to add sponsorship"
-                          {:status (:status response) :sponsor sponsor :campaign wanted})))))))
+                          {:status (:status response) :sponsor sponsor :campaign label})))
+        (throw (ex-info "No response from Fireside when adding sponsorship"
+                        {:sponsor sponsor :campaign label}))))))
 
 (defn set-sponsorship-timecode
   "Update an existing sponsorship's timecode. Sponsorship guids come from
