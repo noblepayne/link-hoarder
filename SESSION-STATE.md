@@ -54,6 +54,11 @@ complete record. Start there, not in /tmp.
    propagate — never read `:url` alone.
 7. Episode lock: `/tmp/opencode/episode-<guid>.lock` (gone after reboot).
 8. Drafts can carry wrong hosts — check participants before publishing.
+9. Fireside `/update_campaigns` broke 2026-10-25: 422 for every sponsor on
+   every episode (incl. published), so campaign names can't be resolved.
+   Workaround: `add-sponsorship` now takes `:campaign-id` (recover the id from
+   any episode's existing sponsorship edit page). Nebula = "Managed Nebula"
+   campaign 2069.
 
 ## Open / deferred (not blockers)
 
@@ -82,7 +87,9 @@ Doc https://h.docs.lol/TEIVKIcUSb2KpMUS9woTkg. 2026-10-25 later pass: doc grew t
 43 links (Telescope de-duped, SeaGL/KSMBD/Niri/Umbriel/NetBird/meshSidecar/OSMC/
 HelixNotes block added) and tags to ~66; meta + 43×2 links + participants
 resynced/verified. Sponsor plan this week: **Nebula + Dynamic ads only, NO
-membership**. Waiting on: workdir files (chapters, sponsors CSV, audio).
+membership**. Chapters 7/7 synced. Nebula attached 1m13s via campaign-id 2069
+(/update_campaigns broken server-side — see gotcha #9). Audio verified 7/7 both
+feeds. **Only publish remains (needs Wes approval).**
 
 ## Key IDs
 
