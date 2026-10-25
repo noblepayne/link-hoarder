@@ -81,15 +81,14 @@ chapters 7/6, sponsors (Nebula + membership), 3 hosts + Seigo (34606), audio
 verified 7/7 + 6/6 (3 passes each — twice is a minimum, not a guarantee).
 Public-confirmed both pages. /tmp/data EDN + /tmp/data-desc-689.txt current.
 
-**690 "The S in PHP is for Security"** (in progress, 2026-10-25): LUP
-`001d7139-1aed-4d0f-9f38-91cbc11cda8b` / adfree `0d60a306-cdba-4e2c-99c7-2880056e48b9`.
-Doc https://h.docs.lol/TEIVKIcUSb2KpMUS9woTkg. 2026-10-25 later pass: doc grew to
-43 links (Telescope de-duped, SeaGL/KSMBD/Niri/Umbriel/NetBird/meshSidecar/OSMC/
-HelixNotes block added) and tags to ~66; meta + 43×2 links + participants
-resynced/verified. Sponsor plan this week: **Nebula + Dynamic ads only, NO
-membership**. Chapters 7/7 synced. Nebula attached 1m13s via campaign-id 2069
-(/update_campaigns broken server-side — see gotcha #9). Audio verified 7/7 both
-feeds. **Only publish remains (needs Wes approval).**
+**690 "The S in PHP is for Security" — LIVE 2026-10-25 13:45 PDT both feeds.**
+LUP `001d7139-1aed-4d0f-9f38-91cbc11cda8b` / adfree
+`0d60a306-cdba-4e2c-99c7-2880056e48b9`. Doc https://h.docs.lol/TEIVKIcUSb2KpMUS9woTkg.
+(Doc late pass: Telescope de-duped; SeaGL/KSMBD/Niri/Umbriel/NetBird/meshSidecar/
+OSMC/HelixNotes block added; tags grew to 71.) 43 links ×2, chapters 7/7,
+3 hosts, no guest. Sponsor plan: **Nebula + Dynamic ads only, NO membership** —
+Nebula 1m13s via campaign-id 2069 (/update_campaigns broken server-side, gotcha #9).
+Audio verified 7/7 both feeds. Public-confirmed; timestamps read 2026-10-25T13:45:00-07:00.
 
 ## Key IDs
 
