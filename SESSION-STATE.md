@@ -79,9 +79,10 @@ Public-confirmed both pages. /tmp/data EDN + /tmp/data-desc-689.txt current.
 **690 "The S in PHP is for Security"** (in progress, 2026-10-25): LUP
 `001d7139-1aed-4d0f-9f38-91cbc11cda8b` / adfree `0d60a306-cdba-4e2c-99c7-2880056e48b9`.
 Doc https://h.docs.lol/TEIVKIcUSb2KpMUS9woTkg. Meta + links 34×2 + 3 hosts
-synced/verified; preview at /tmp/opencode/preview690/. Tags approved pending paste
-(14 specific: PHP2Shell…plex2jellyfin). Waiting on: workdir files (chapters,
-sponsors, audio), tag paste, then full resync + publish.
+synced/verified; preview at /tmp/opencode/preview690/. 2026-10-25: 18-tag set
+(PHP2Shell…plex2jellyfin + tail) pasted, pushed to both feeds, verified via
+episode[keywords] read-back. Waiting on: workdir files (chapters, sponsors,
+audio), then chapters/sponsors/audio + publish.
 
 ## Key IDs
 
