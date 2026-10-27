@@ -54,11 +54,13 @@ complete record. Start there, not in /tmp.
    propagate — never read `:url` alone.
 7. Episode lock: `/tmp/opencode/episode-<guid>.lock` (gone after reboot).
 8. Drafts can carry wrong hosts — check participants before publishing.
-9. Fireside `/update_campaigns` broke 2026-10-25: 422 for every sponsor on
-   every episode (incl. published), so campaign names can't be resolved.
-   Workaround: `add-sponsorship` now takes `:campaign-id` (recover the id from
-   any episode's existing sponsorship edit page). Nebula = "Managed Nebula"
-   campaign 2069.
+9. Fireside `/update_campaigns` broke 2026-10-25 (422 for every sponsor and
+   episode, incl. published). Do not use it. Chain now: campaigns come from
+   the sponsor's `/campaigns` index (uuids), and the sponsorship POST needs the
+   **numeric** Rails id, which is only exposed as `id="edit_campaign_<n>"` on
+   the campaign edit page. `add-sponsorship` resolves uuid -> numeric itself.
+   Known ids: Nebula "Managed Nebula" 2069, Hostinger "Hostinger AI Builder"
+   2142, Incogni 2143, Namecheap 2144.
 
 ## Open / deferred (not blockers)
 
