@@ -467,6 +467,24 @@
         (str/replace "\\/" "/")
         option-map)))
 
+(defn campaigns-by-sponsor
+  "Campaigns for a sponsor as {uuid title}, scraped from the sponsor's
+  campaigns index page.
+
+  Replaces fetch-campaigns, whose endpoint (/update_campaigns) has returned
+  422 for every sponsor and episode since 2026-10-25. The index is plain
+  HTML, so this needs no dropdown lookup at all."
+  [client podcast sponsor-id]
+  (let [page (fetch-as-hickory {:http-client client
+                                :url (str FIRESIDE-BASE-URL "/podcasts/" podcast
+                                          "/sponsors/" sponsor-id "/campaigns")})]
+    (into {}
+          (keep (fn [a]
+                  (let [href (str (get-in a [:attrs :href]))]
+                    (when-let [[_ uuid] (re-find #"/campaigns/([0-9a-f-]{36})/edit$" href)]
+                      [uuid (str/trim (str (first (:content a))))]))))
+          (hs/select (hs/tag :a) page))))
+
 (defn sponsorship-form
   "Fetch the 'new sponsorship' page and return
    {:action \"/podcasts/...\" :auth-token \"...\"
@@ -493,6 +511,21 @@
      :sponsors (option-map (select-html html "sponsorship[sponsor_id]"))
      :campaigns (option-map (select-html html "sponsorship[campaign_id]"))}))
 
+(defn sponsor-guid-by-title
+  "Find a podcast sponsor by exact display title. Returns the uuid or nil.
+  Exact match only: sync-sponsorships keys off exact strings, so a fuzzy
+  match here would silently misattach every future episode."
+  [{:keys [client podcast title]}]
+  (let [page (fetch-as-hickory {:http-client client
+                                :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors")})]
+    (some (fn [a]
+            (let [href (get-in a [:attrs :href])]
+              (when (and href (re-find #"/sponsors/[0-9a-f-]{36}$" href))
+                (let [t (clojure.string/trim (str (first (:content a))))]
+                  (when (and (= t title) (seq t))
+                    (second (re-find #"/sponsors/([0-9a-f-]{36})$" href)))))))
+          (hs/select (hs/tag :a) page))))
+
 (defn add-sponsorship
   "Create a sponsorship on an episode. Sponsor and campaign are matched by
   display name against Fireside's dropdowns, so callers pass the same
@@ -516,9 +549,13 @@
         sponsor-id (key (first (filter (fn [[_ label]] (= label sponsor)) sponsors)))]
     (when-not sponsor-id
       (throw (ex-info "Unknown sponsor" {:sponsor sponsor :known (vec (vals sponsors))})))
-    (let [;; A supplied :campaign-id skips fetch-campaigns entirely.
+    (let [;; Sponsor URLs take the uuid; the dropdown value is the numeric
+          ;; Rails id, and /sponsors/<numeric>/campaigns 500s.
+          sponsor-uuid (or (sponsor-guid-by-title {:client client :podcast podcast :title sponsor})
+                           (throw (ex-info "Sponsor uuid not found" {:sponsor sponsor})))
+          ;; A supplied :campaign-id skips the campaign lookup entirely.
           campaign-id (or campaign-id
-                          (let [campaigns (fetch-campaigns client podcast episode-guid sponsor-id)
+                          (let [campaigns (campaigns-by-sponsor client podcast sponsor-uuid)
                                 ;; Don't guess: picking an arbitrary campaign is
                                 ;; the exact failure this function exists to avoid.
                                 wanted (or campaign
@@ -691,21 +728,6 @@
 
 (declare cookies-for)
 
-(defn sponsor-guid-by-title
-  "Find a podcast sponsor by exact display title. Returns the uuid or nil.
-  Exact match only: sync-sponsorships keys off exact strings, so a fuzzy
-  match here would silently misattach every future episode."
-  [{:keys [client podcast title]}]
-  (let [page (fetch-as-hickory {:http-client client
-                                :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors")})]
-    (some (fn [a]
-            (let [href (get-in a [:attrs :href])]
-              (when (and href (re-find #"/sponsors/[0-9a-f-]{36}$" href))
-                (let [t (clojure.string/trim (str (first (:content a))))]
-                  (when (and (= t title) (seq t))
-                    (second (re-find #"/sponsors/([0-9a-f-]{36})$" href)))))))
-          (hs/select (hs/tag :a) page))))
-
 (defn- redirect-location
   "Pull the Location header out of a hato response, case-insensitively.
   Live hato downcases header names, but a stub or proxy that preserves
@@ -793,9 +815,11 @@
                                "campaign[promo_code]" (or promo-code "")
                                "campaign[message]" message "campaign[script]" ""
                                "commit" "Create Campaign"))
-            cid (or (second (re-find #"/campaigns/([0-9a-f-]{36})$" (str cloc)))
-                    (throw (ex-info "Campaign create redirected somewhere unexpected"
-                                    {:location cloc :sponsor title})))]
+            campaigns (campaigns-by-sponsor client podcast sid)
+            cid (or (key (first (filter (fn [[_ t]] (= t campaign-title)) campaigns)))
+                    (throw (ex-info "Campaign not created"
+                                    {:sponsor title :campaign campaign-title
+                                     :location cloc :known (vec (vals campaigns))})))]
         (println "  campaign" campaign-title "->" cid)
         ;; 3. verify both read back before claiming success.
         (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]

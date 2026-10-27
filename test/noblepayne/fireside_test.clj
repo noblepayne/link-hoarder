@@ -384,6 +384,7 @@
     (with-redefs [f/sponsorship-form (fn [_] {:action "/podcasts/p/episodes/g/sponsorships"
                                               :auth-token "T"
                                               :sponsors {"2155" "Nebula"}})
+                  f/sponsor-guid-by-title (fn [_] "sponsor-uuid")
                   f/fetch-campaigns (fn [& _] (reset! campaigns-called true)
                                       (throw (ex-info "should not be called" {})))
                   http/post (fn [_url opts] (reset! posted (:form-params opts))
@@ -895,11 +896,16 @@
           cform {:tag :form :attrs {:action "/podcasts/p/sponsors/SID/campaigns"}
                  :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}
           sponsors-page {:tag :root :content []}
+          campaigns-page {:tag :root
+                          :content [{:tag :a
+                                     :attrs {:href "/podcasts/p/sponsors/8bfb1e79-a40f-4352-91cb-725df5f56da2/campaigns/94e7e1f4-80fe-4cea-a39d-d6521027f2f6/edit"}
+                                     :content ["Hostinger AI Builder"]}]}
           attach-arg (atom nil)
           posted (atom [])]
       (with-redefs [noblepayne.fireside/fetch-as-hickory
                     (fn [{:keys [url]}]
                       (cond (re-find #"campaigns/new" url) {:tag :root :content [cform]}
+                            (re-find #"/campaigns$" url) campaigns-page
                             (re-find #"sponsors/new" url) {:tag :root :content [sform]}
                             :else sponsors-page))
                     noblepayne.fireside/sponsor-guid-by-title

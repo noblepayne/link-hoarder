@@ -1,0 +1,66 @@
+;; LUP sponsor plan, episodes 690-693 (2026-10-27)
+;;
+;; Why this file exists: these sponsors are inserted by ART19 into dynamic ad
+;; slots, so they are NOT in the Fireside Ads CSV and `sync-sponsorships`
+;; will never attach them (it keys off the CSV and skips `Dynamic N` rows by
+;; design). They must be attached with `add-sponsorship`.
+;;
+;; Timecode: dynamic inserts have no fixed position in the Fireside audio, so
+;; attach at "0s". The timecode is only a field on the sponsorship record; the
+;; page listing (header + blurb) is the deliverable.
+;;
+;; `:title` is the Fireside sponsor title and an exact-match join key. Never
+;; vary the spelling or future CSV syncs will silently skip the row.
+;; `:campaign-title` must be the existing campaign when the sponsor already
+;; exists (Fireside resolves it by name), otherwise the name to create.
+;; `:message` must match the feed blurb exactly - it is what keeps
+;; linuxunplugged.com and the podcast notes from disagreeing.
+
+{:podcast "linuxunplugged"
+
+ :sponsors
+ {:incogni    {:title "Incogni"
+               :url "https://incogni.com/unplugged"
+               :promo "UNPLUGGED"
+               :campaign-title "Incogni"
+               :message "Use code UNPLUGGED for 60% off an annual plan."}
+
+  :namecheap  {:title "Namecheap"
+               :url "https://namecheap.promo"
+               :promo "UNPLUGGED"
+               :campaign-title "Namecheap"
+               :message "Use code UNPLUGGED for an extra 15% off VPS hosting."}
+
+  ;; Already in Fireside: sponsor 2233, campaign 2142 "Hostinger AI Builder".
+  ;; Do NOT onboard; attach only.
+  :hostinger  {:title "Hostinger"
+               :url "https://hostinger.com/unplugged"
+               :promo "UNPLUGGED"
+               :campaign-title "Hostinger AI Builder"
+               :campaign-id "2142"
+               :message "10% off - already on the site as hostinger.com-lup (ep 688)."}}
+
+ ;; Attach matrix. Guids for 691-693 land when the drafts exist.
+ :episodes
+ {690 {:guid "001d7139-1aed-4d0f-9f38-91cbc11cda8b"
+       :timecode "0s"
+       :attach [:incogni :namecheap]}
+
+  691 {:guid nil
+       :timecode "0s"
+       :attach [:incogni :namecheap :hostinger]}
+
+  692 {:guid nil
+       :timecode "0s"
+       :attach [:incogni :namecheap :hostinger]}
+
+  693 {:guid nil
+       :timecode "0s"
+       :attach [:incogni :namecheap]}}
+
+ ;; Attach with the campaign uuid, not the name: Fireside's
+ ;; /update_campaigns (the name -> id lookup) has returned 422 for every
+ ;; sponsor and episode since 2026-10-25. add-sponsorship takes :campaign-id
+ ;; to bypass it, and onboard-sponsor! returns the uuid it created.
+ :notes ["Verify with fetch-sponsorship-ids: the guid must list every sponsor in :attach."
+         "Then confirm the episode aside renders header + blurb on the public page."]}
