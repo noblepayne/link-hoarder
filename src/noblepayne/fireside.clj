@@ -485,6 +485,24 @@
                       [uuid (str/trim (str (first (:content a))))]))))
           (hs/select (hs/tag :a) page))))
 
+(defn campaign-numeric-id
+  "Numeric (Rails) campaign id for a campaign uuid.
+
+  The sponsorship form's campaign_id field wants the numeric id; posting the
+  uuid is rejected with \"Please select an existing Campaign.\" The number is
+  only exposed as the DOM id of the campaign edit form (edit_campaign_<id>),
+  so it has to be read off that page."
+  [client podcast sponsor-id campaign-uuid]
+  (let [html (str (:body (http/request
+                          {:method :get :http-client client
+                           :url (str FIRESIDE-BASE-URL "/podcasts/" podcast
+                                     "/sponsors/" sponsor-id "/campaigns/"
+                                     campaign-uuid "/edit")})))
+        id (second (re-find #"edit_campaign_(\d+)" html))]
+    (or id
+        (throw (ex-info "Campaign numeric id not found"
+                        {:campaign campaign-uuid :sponsor-id sponsor-id})))))
+
 (defn sponsorship-form
   "Fetch the 'new sponsorship' page and return
    {:action \"/podcasts/...\" :auth-token \"...\"
@@ -570,6 +588,9 @@
                                               {:campaign wanted :sponsor sponsor
                                                :known (vec (vals campaigns))})))
                             id))
+          campaign-num (if (re-matches #"\d+" (str campaign-id))
+                         campaign-id
+                         (campaign-numeric-id client podcast sponsor-uuid campaign-id))
           label (or campaign campaign-id)]
       (if-let [response (http/post (str FIRESIDE-BASE-URL action)
                                    {:http-client client
@@ -578,9 +599,9 @@
                                     :form-params {"authenticity_token" auth-token
                                                   "sponsorship[timecode_as_words]" timecode
                                                   "sponsorship[sponsor_id]" sponsor-id
-                                                  "sponsorship[campaign_id]" campaign-id}})]
+                                                  "sponsorship[campaign_id]" campaign-num}})]
         (if (<= 200 (:status response) 302)
-          {:sponsor sponsor :campaign label :campaign-id campaign-id :timecode timecode}
+          {:sponsor sponsor :campaign label :campaign-id campaign-num :timecode timecode}
           (throw (ex-info "Failed to add sponsorship"
                           {:status (:status response) :sponsor sponsor :campaign label})))
         (throw (ex-info "No response from Fireside when adding sponsorship"

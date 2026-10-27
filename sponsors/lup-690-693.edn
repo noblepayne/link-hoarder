@@ -23,12 +23,16 @@
                :url "https://incogni.com/unplugged"
                :promo "UNPLUGGED"
                :campaign-title "Incogni"
+               :sponsor-uuid "736e7e47-66ec-4ca1-b25e-d1873983129e"
+               :campaign-id "2143"
                :message "Use code UNPLUGGED for 60% off an annual plan."}
 
   :namecheap  {:title "Namecheap"
                :url "https://namecheap.promo"
                :promo "UNPLUGGED"
                :campaign-title "Namecheap"
+               :sponsor-uuid "73895a00-1c01-470d-89ff-d88e8de5d17b"
+               :campaign-id "2144"
                :message "Use code UNPLUGGED for an extra 15% off VPS hosting."}
 
   ;; Already in Fireside: sponsor 2233, campaign 2142 "Hostinger AI Builder".
@@ -37,6 +41,7 @@
                :url "https://hostinger.com/unplugged"
                :promo "UNPLUGGED"
                :campaign-title "Hostinger AI Builder"
+               :sponsor-uuid "8bfb1e79-a40f-4352-91cb-725df5f56da2"
                :campaign-id "2142"
                :message "10% off - already on the site as hostinger.com-lup (ep 688)."}}
 
@@ -62,5 +67,8 @@
  ;; /update_campaigns (the name -> id lookup) has returned 422 for every
  ;; sponsor and episode since 2026-10-25. add-sponsorship takes :campaign-id
  ;; to bypass it, and onboard-sponsor! returns the uuid it created.
- :notes ["Verify with fetch-sponsorship-ids: the guid must list every sponsor in :attach."
-         "Then confirm the episode aside renders header + blurb on the public page."]}
+ :notes ["690 done 2026-10-27: Incogni, Namecheap, Nebula attached; page renders header + blurb + code."
+         "Verify with fetch-sponsorship-ids: the guid must list every sponsor in :attach."
+         "Then confirm the episode aside renders header + blurb on the public page."
+         "campaign-id here is the NUMERIC Rails id: the sponsorship form rejects uuids with"
+         "'Please select an existing Campaign.' add-sponsorship resolves it automatically."]}
