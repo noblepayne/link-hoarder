@@ -792,23 +792,22 @@
                         (assoc cinputs "campaign[title]" campaign-title "campaign[url]" url
                                "campaign[promo_code]" (or promo-code "")
                                "campaign[message]" message "campaign[script]" ""
-                               "commit" "Create Campaign"))]
-        (let [cid (second (re-find #"/campaigns/([0-9a-f-]{36})$" (str cloc)))]
-          (when-not cid
-            (throw (ex-info "Campaign create redirected somewhere unexpected"
-                            {:location cloc :sponsor title})))
-          (println "  campaign" campaign-title "->" cid)
-          ;; 3. verify both read back before claiming success.
-          (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
-            (when-not (= back sid)
-              (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid})))
-            (when (and episode-guid timecode)
-              (println "  attaching at" timecode)
-              (add-sponsorship {:client client :podcast podcast :episode-guid episode-guid
-                                :sponsor title :timecode timecode
-                                :campaign campaign-title :campaign-id cid})))
-          {:sponsor title :campaign campaign-title :campaign-id cid
-           :sponsor-guid sid :created? true})))))
+                               "commit" "Create Campaign"))
+            cid (or (second (re-find #"/campaigns/([0-9a-f-]{36})$" (str cloc)))
+                    (throw (ex-info "Campaign create redirected somewhere unexpected"
+                                    {:location cloc :sponsor title})))]
+        (println "  campaign" campaign-title "->" cid)
+        ;; 3. verify both read back before claiming success.
+        (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
+          (when-not (= back sid)
+            (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid})))
+          (when (and episode-guid timecode)
+            (println "  attaching at" timecode)
+            (add-sponsorship {:client client :podcast podcast :episode-guid episode-guid
+                              :sponsor title :timecode timecode
+                              :campaign campaign-title :campaign-id cid})))
+        {:sponsor title :campaign campaign-title :campaign-id cid
+         :sponsor-guid sid :created? true}))))
 
 (defn fetch-page!
   "GET url and return the body. Throws unless we land a 200 on the URL we
