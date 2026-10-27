@@ -895,6 +895,7 @@
           cform {:tag :form :attrs {:action "/podcasts/p/sponsors/SID/campaigns"}
                  :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}]}
           sponsors-page {:tag :root :content []}
+          attach-arg (atom nil)
           posted (atom [])]
       (with-redefs [noblepayne.fireside/fetch-as-hickory
                     (fn [{:keys [url]}]
@@ -906,7 +907,7 @@
                       (swap! lookups inc)
                       (when (and (= title "Hostinger") (> @lookups 1)) "8bfb1e79-a40f-4352-91cb-725df5f56da2"))
                     noblepayne.fireside/cookies-for (fn [_ _] "c=v")
-                    noblepayne.fireside/add-sponsorship (fn [_] {:attached true})
+                    noblepayne.fireside/add-sponsorship (fn [arg] (reset! attach-arg arg) {:attached true})
                     http/post
                     (fn [url & _]
                       (swap! posted conj url)
@@ -918,10 +919,13 @@
         (let [r (f/onboard-sponsor! {:client nil :podcast "p" :title "Hostinger"
                                      :url "https://hostinger.com/unplugged"
                                      :campaign-title "Hostinger AI Builder"
-                                     :promo-code "UNPLUGGED" :message "Try it."})]
+                                     :promo-code "UNPLUGGED" :message "Try it."
+                                     :episode-guid "g" :timecode "0s"})]
           (is (= "8bfb1e79-a40f-4352-91cb-725df5f56da2" (:sponsor-guid r)))
           (is (true? (:created? r)))
-          (is (= 2 (count @posted)))))))
+          (is (= 2 (count @posted)))
+          (is (= "94e7e1f4-80fe-4cea-a39d-d6521027f2f6" (:campaign-id r)))
+          (is (= "94e7e1f4-80fe-4cea-a39d-d6521027f2f6" (:campaign-id @attach-arg)))))))
   (testing "existing sponsor returns without touching anything"
     (let [posted (atom 0)]
       (with-redefs [noblepayne.fireside/sponsor-guid-by-title (fn [_] "EXISTING")

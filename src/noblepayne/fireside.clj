@@ -728,7 +728,8 @@
   :campaign overrides the single-campaign auto-pick.
   Returns {:sponsor :campaign :sponsor-guid :created? true}, or if the
   title already existed, the same shape with :created? false."
-  [{:keys [client podcast title url campaign-title promo-code message episode-guid timecode campaign]}]
+  [{:keys [client podcast title url campaign-title promo-code message episode-guid
+           timecode campaign campaign-id]}]
   (when (str/blank? title)
     (throw (ex-info "Sponsor title must not be blank" {})))
   (when (str/blank? message)
@@ -738,7 +739,8 @@
           (println "  already exists; attaching at" timecode)
           (add-sponsorship (cond-> {:client client :podcast podcast :episode-guid episode-guid
                                     :sponsor title :timecode timecode}
-                             campaign (assoc :campaign campaign))))
+                             campaign (assoc :campaign campaign)
+                             campaign-id (assoc :campaign-id campaign-id))))
         {:sponsor title :sponsor-guid existing :created? false})
     (let [nc (http/build-http-client {:connect-timeout 30000 :redirect-policy :never
                                       :cookie-policy :none})
@@ -791,20 +793,22 @@
                                "campaign[promo_code]" (or promo-code "")
                                "campaign[message]" message "campaign[script]" ""
                                "commit" "Create Campaign"))]
-        (when-not (re-find #"/campaigns/([0-9a-f-]{36})$" (str cloc))
-          (throw (ex-info "Campaign create redirected somewhere unexpected"
-                          {:location cloc :sponsor title})))
-        (println "  campaign" campaign-title "->" cloc)
-        ;; 3. verify both read back before claiming success.
-        (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
-          (when-not (= back sid)
-            (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid})))
-          (when (and episode-guid timecode)
-            (println "  attaching at" timecode)
-            (add-sponsorship (cond-> {:client client :podcast podcast :episode-guid episode-guid
-                                      :sponsor title :timecode timecode}
-                               campaign (assoc :campaign campaign-title)))))
-        {:sponsor title :campaign campaign-title :sponsor-guid sid :created? true}))))
+        (let [cid (second (re-find #"/campaigns/([0-9a-f-]{36})$" (str cloc)))]
+          (when-not cid
+            (throw (ex-info "Campaign create redirected somewhere unexpected"
+                            {:location cloc :sponsor title})))
+          (println "  campaign" campaign-title "->" cid)
+          ;; 3. verify both read back before claiming success.
+          (let [back (sponsor-guid-by-title {:client client :podcast podcast :title title})]
+            (when-not (= back sid)
+              (throw (ex-info "Sponsor does not read back after create" {:title title :sid sid})))
+            (when (and episode-guid timecode)
+              (println "  attaching at" timecode)
+              (add-sponsorship {:client client :podcast podcast :episode-guid episode-guid
+                                :sponsor title :timecode timecode
+                                :campaign campaign-title :campaign-id cid})))
+          {:sponsor title :campaign campaign-title :campaign-id cid
+           :sponsor-guid sid :created? true})))))
 
 (defn fetch-page!
   "GET url and return the body. Throws unless we land a 200 on the URL we
