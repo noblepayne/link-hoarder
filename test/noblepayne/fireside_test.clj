@@ -374,6 +374,60 @@
         (is (instance? clojure.lang.MapEntry entry))
         (is (sequential? entry))))))
 
+(deftest sync-episode-sponsors-test
+  (testing "new sponsor: created, attached, message left alone"
+    (let [attached (atom []) onboarded (atom []) messaged (atom [])
+          present (atom #{})]
+      (with-redefs [f/fetch-sponsorship-ids (fn [_ _ _] (map (fn [n] {:sponsor n}) @present))
+                    f/sponsor-guid-by-title (fn [_] nil)
+                    f/onboard-sponsor! (fn [m] (swap! onboarded conj (:title m))
+                                         {:sponsor-guid "sid-1"})
+                    f/campaigns-by-sponsor (fn [_ _ _] {"cid-1" "Incogni"})
+                    f/campaign-message (fn [_ _ _ _] "same copy")
+                    f/set-campaign-message! (fn [m] (swap! messaged conj m) true)
+                    f/add-sponsorship (fn [m] (swap! attached conj (:sponsor m))
+                                        (swap! present conj (:sponsor m))
+                                        {:ok true})]
+        (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
+                                           :sponsors [{:name "Incogni" :url "u"
+                                                       :blurb "same copy" :code "UNPLUGGED"}]
+                                           :timecodes {"Incogni" "21m 24s"}})]
+          (is (= ["Incogni"] @onboarded))
+          (is (= ["Incogni"] @attached))
+          (is (empty? @messaged) "message already matches, so no patch")
+          (is (= ["Incogni"] (:created r)))
+          (is (= ["Incogni"] (:attached r)))
+          (is (true? (:verified r)))))))
+
+  (testing "existing sponsor with stale copy: messaged, not re-created"
+    (let [attached (atom []) messaged (atom []) present (atom #{"Namecheap"})]
+      (with-redefs [f/fetch-sponsorship-ids (fn [_ _ _] (map (fn [n] {:sponsor n}) @present))
+                    f/sponsor-guid-by-title (fn [_] "sid-2")
+                    f/onboard-sponsor! (fn [_] (throw (ex-info "should not onboard" {})))
+                    f/campaigns-by-sponsor (fn [_ _ _] {"cid-2" "Namecheap"})
+                    f/campaign-message (fn [_ _ _ _] "old copy")
+                    f/set-campaign-message! (fn [m] (swap! messaged conj (:message m)) true)
+                    f/add-sponsorship (fn [m] (swap! attached conj (:sponsor m)) {:ok true})]
+        (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
+                                           :sponsors [{:name "Namecheap" :url "u"
+                                                       :blurb "new copy" :code "UNPLUGGED"}]})]
+          (is (= ["new copy"] @messaged))
+          (is (empty? @attached) "already attached, so no duplicate")
+          (is (= [] (:created r)))
+          (is (= ["Namecheap"] (:present r)))
+          (is (true? (:verified r)))))))
+
+  (testing "a sponsor missing after the run throws"
+    (with-redefs [f/fetch-sponsorship-ids (fn [_ _ _] [])
+                  f/sponsor-guid-by-title (fn [_] "sid-3")
+                  f/campaigns-by-sponsor (fn [_ _ _] {"cid-3" "Nebula"})
+                  f/campaign-message (fn [_ _ _ _] "copy")
+                  f/add-sponsorship (fn [_] {:ok true})] ; does not actually attach
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing after sync"
+                            (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
+                                                       :sponsors [{:name "Nebula" :url "u"
+                                                                   :blurb "copy" :code nil}]}))))))
+
 (deftest set-campaign-message-test
   ;; The campaign edit form is a _method=patch POST: every field must be
   ;; resent or Rails clears it. Only campaign[message] may change.

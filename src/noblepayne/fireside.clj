@@ -1410,6 +1410,31 @@
   with no guests unless Wes names some."
   ["1848" "1849" "2108"])
 
+(defn- campaign-edit
+  "Fetch a campaign's edit page.
+
+  Returns {:base url :form-id id :page hickory}. Campaign pages are keyed by
+  uuid; only the form's DOM id is numeric."
+  [client podcast sponsor-id campaign-id]
+  (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                            "sponsors" sponsor-id "campaigns" campaign-id])
+        html (str (:body (http/request {:method :get :http-client client
+                                        :url (str base "/edit")})))
+        form-id (if (re-matches #"\d+" (str campaign-id))
+                  (str "edit_campaign_" campaign-id)
+                  (str "edit_campaign_"
+                       (or (second (re-find #"edit_campaign_(\d+)" html))
+                           (throw (ex-info "Campaign form id not found"
+                                           {:campaign campaign-id})))))]
+    {:base base :form-id form-id
+     :page (hickory/as-hickory (hickory/parse html))}))
+
+(defn campaign-message
+  "The message currently stored on a campaign, or nil."
+  [client podcast sponsor-id campaign-id]
+  (let [{:keys [form-id page]} (campaign-edit client podcast sponsor-id campaign-id)]
+    (get (successful-controls page form-id) "campaign[message]")))
+
 (defn set-campaign-message!
   "Replace a campaign's message (the blurb shown in the episode aside and on
   the site).
@@ -1423,19 +1448,8 @@
   [{:keys [client podcast sponsor-id campaign-id message]}]
   (when (str/blank? message)
     (throw (ex-info "Campaign message must not be blank" {:campaign campaign-id})))
-  (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
-                            "sponsors" sponsor-id "campaigns" campaign-id])
-        ;; Campaign pages are keyed by uuid; only the form's DOM id is numeric.
-        edit-html #(:body (http/request {:method :get :http-client client
-                                         :url (str base "/edit")}))
-        page #(hickory/as-hickory (hickory/parse (str (edit-html))))
-        form-id (if (re-matches #"\d+" (str campaign-id))
-                  (str "edit_campaign_" campaign-id)
-                  (str "edit_campaign_"
-                       (or (second (re-find #"edit_campaign_(\d+)" (str (edit-html))))
-                           (throw (ex-info "Campaign form id not found"
-                                           {:campaign campaign-id})))))
-        controls (successful-controls (page) form-id)
+  (let [{:keys [base form-id page]} (campaign-edit client podcast sponsor-id campaign-id)
+        controls (successful-controls page form-id)
         response (http/post base {:http-client client
                                   :throw-exceptions false
                                   :form-params (assoc controls "campaign[message]" message)})]
@@ -1443,11 +1457,74 @@
       (throw (ex-info "Failed to update campaign message"
                       {:status (:status response) :campaign campaign-id})))
     ;; Re-read, never trust the POST status.
-    (let [stored (get (successful-controls (page) form-id) "campaign[message]")]
+    (let [stored (campaign-message client podcast sponsor-id campaign-id)]
       (when-not (= (str/trim (str stored)) (str/trim (str message)))
         (throw (ex-info "Campaign message did not persist"
                         {:campaign campaign-id :expected message :stored stored}))))
     true))
+
+(defn sync-episode-sponsors!
+  "Make an episode's sponsorships match the doc's SPONSORS block.
+
+  `sponsors` is the parsed block: [{:name :url :blurb :code}]. For each one:
+  create the sponsor and its single campaign when the title is new, update the
+  campaign message when it differs, and attach the sponsorship when the
+  episode does not already carry it. Idempotent - re-running is safe.
+
+  Options:
+    :timecodes       map of sponsor name -> timecode words, default 0s
+    :campaign-titles map of sponsor name -> campaign title, default the name
+
+  Returns {:created [...] :messaged [...] :attached [...] :present [...]
+           :verified true}, and throws if any sponsor is missing afterwards."
+  [{:keys [client podcast episode-guid sponsors timecodes campaign-titles]}]
+  (when (empty? sponsors)
+    (throw (ex-info "No sponsors to sync" {:episode-guid episode-guid})))
+  (let [present (atom (set (map :sponsor (fetch-sponsorship-ids client podcast episode-guid))))
+        result
+        (reduce
+         (fn [acc {:keys [name url blurb code]}]
+           (let [ct (get campaign-titles name name)
+                 tc (get timecodes name "0s")
+                 existing (sponsor-guid-by-title {:client client :podcast podcast :title name})
+                 created? (nil? existing)
+                 sid (or existing
+                         (:sponsor-guid
+                          (onboard-sponsor! {:client client :podcast podcast
+                                             :title name :url url
+                                             :campaign-title ct
+                                             :promo-code (or code "")
+                                             :message blurb})))
+                 campaigns (campaigns-by-sponsor client podcast sid)
+                 cid (or (key (first (filter (fn [[_ t]] (= t ct)) campaigns)))
+                         (throw (ex-info "Campaign not found for sponsor"
+                                         {:sponsor name :campaign ct
+                                          :known (vec (vals campaigns))})))
+                 stored (campaign-message client podcast sid cid)
+                 messaged? (not= (str/trim (str stored)) (str/trim (str blurb)))]
+             (when messaged?
+               (set-campaign-message! {:client client :podcast podcast
+                                       :sponsor-id sid :campaign-id cid
+                                       :message blurb}))
+             (when-not (contains? @present name)
+               (add-sponsorship {:client client :podcast podcast
+                                 :episode-guid episode-guid
+                                 :sponsor name :campaign ct :campaign-id cid
+                                 :timecode tc})
+               (swap! present conj name))
+             (cond-> acc
+               created? (update :created conj name)
+               messaged? (update :messaged conj name)
+               (not (contains? (:before acc) name)) (update :attached conj name)
+               (contains? (:before acc) name) (update :present conj name))))
+         {:before @present :created [] :messaged [] :attached [] :present []}
+         sponsors)
+        ;; Verify by re-reading the episode, not by trusting the atom.
+        after (set (map :sponsor (fetch-sponsorship-ids client podcast episode-guid)))
+        missing (remove after (map :name sponsors))]
+    (when (seq missing)
+      (throw (ex-info "Sponsors missing after sync" {:missing (vec missing)})))
+    (-> result (dissoc :before) (assoc :verified true))))
 
 (defn set-participants!
   "Set host/guest checkboxes without touching anything else. host-ids
