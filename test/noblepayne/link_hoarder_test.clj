@@ -164,7 +164,7 @@
     (is (= [] (dedupe-tags [])))))
 
 (deftest extract-sponsors-test
-  ;; The doc grew a structured SPONSORS block (2026-10-29). The site renders
+  ;; The doc grew a structured SPONSORS block (2026-10-28). The site renders
   ;; the sponsor title as a heading, so a blurb that repeats the name must be
   ;; trimmed, and the **Code:** paragraph must be dropped structurally.
   (let [md (str "#### SPONSORS\n\n"
@@ -191,3 +191,28 @@
         (testing "the Code: paragraph is not part of the blurb"
           (is (not (str/includes? (:blurb (second sponsors)) "Code:")))))
       (finally (.delete tmp)))))
+
+(deftest extract-sponsors-edge-cases-test
+  ;; Guards exact regressions found in review on 2026-10-28.
+  (let [parse (fn [md]
+                (let [f (java.io.File/createTempFile "sponsor-probe" ".md")]
+                  (try (spit f md)
+                       (lh/extract-sponsors (lh/fetch-markdown (.getAbsolutePath f)))
+                       (finally (.delete f)))))]
+    (testing "inline code in the blurb survives; the Code line supplies :code"
+      (let [[s] (parse (str "#### SPONSORS\n\n- **[Acme](https://acme.test)**  \n"
+                            "  Save with `SAVE60` today.\n\n  **Code:** `UNPLUGGED`\n"))]
+        (is (= "Save with SAVE60 today." (:blurb s)))
+        (is (= "UNPLUGGED" (:code s)))))
+    (testing "a sponsor name that prefixes a word does not mangle the blurb"
+      (let [[s] (parse (str "#### SPONSORS\n\n- **[Secure](https://secure.test)**  \n"
+                            "  Securely connect to your files from anywhere.\n"))]
+        (is (= "Securely connect to your files from anywhere." (:blurb s)))))
+    (testing "no space is inserted before punctuation"
+      (let [[s] (parse (str "#### SPONSORS\n\n- **[Acme](https://acme.test)**  \n"
+                            "  Use code **UNPLUGGED**.\n"))]
+        (is (= "Use code UNPLUGGED." (:blurb s)))))
+    (testing "an item whose name is not a link is skipped"
+      (is (empty? (parse (str "#### SPONSORS\n\n- **Acme**  \n  No link here.\n")))))
+    (testing "no SPONSORS block yields []"
+      (is (empty? (parse "# Just a doc\n\n+ nothing\n"))))))

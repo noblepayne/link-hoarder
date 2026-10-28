@@ -7,8 +7,8 @@ complete record. Start there, not in /tmp.
 
 ## Where things live
 
-- Repo: `~/src/link-hoarder` (this dir), branch `ep687-audio-flow` (pushed).
-  `main` is behind on purpose — merge after 689 proves the runbook again.
+- Repo: `~/src/link-hoarder` (this dir), branch `main`
+  (`ep687-audio-flow` is fully merged).
 - Docs: `EPISODE-RUNBOOK.md` (weekly procedure), `GUIDE.md` (sponsor onboarding),
   `(comment ...)` scratch blocks in both `src` files (parameterized REPL template).
 - Creds: `.env` in repo root (`FIRESIDE_BASE_URL=https://app.fireside.fm`,
@@ -33,8 +33,9 @@ complete record. Start there, not in /tmp.
 - LUP: publish immediately — Public + publish time snapped DOWN to quarter-hour PT.
 - Hosts default: Chris 1848, Wes 1849, Brent 2108. NO guests unless named.
   (`set-participants!`; adfree podcast has no roster at all.)
-- Sponsor message = third-person website copy, NO em dashes, CTA verbatim
-  from manager. Script stays blank.
+- Sponsor copy lives in the doc's `#### SPONSORS` block; `sync-episode-sponsors!`
+  reconciles it (create + message + attach). A leading "Name:" is stripped by
+  the parser, because the site renders the title as a heading. Script stays blank.
 - Every doc update = full resync (meta + links) + fresh previews.
 - Publish approval always required. Never auto-publish.
 
@@ -68,7 +69,6 @@ complete record. Start there, not in /tmp.
 - Old `RUNBOOK.md` has stale 687-era notes; `EPISODE-RUNBOOK.md` is canonical.
 - Nice-to-haves: curl `-K` cookie file, login verification fn, session fast
   path, optgroup/single-quote edge cases in scrapers.
-- Merge `ep687-audio-flow` → `main` after next episode proves the runbook.
 
 ## 689 tag decision (approved 2026-10-18)
 

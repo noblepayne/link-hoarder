@@ -49,7 +49,12 @@
                :campaign-title "Hostinger AI Builder"
                :sponsor-uuid "8bfb1e79-a40f-4352-91cb-725df5f56da2"
                :campaign-id "2142"
-               :message "10% off - already on the site as hostinger.com-lup (ep 688)."}}
+               ;; NOTE: no live blurb recorded here. The ep-688 copy was
+               ;; operator shorthand ("10% off - hostinger.com-lup"), which
+               ;; would overwrite the real campaign message if fed to
+               ;; set-campaign-message!. Leave nil and treat the doc's
+               ;; SPONSORS block as the copy source.
+               :message nil}}
 
  ;; Attach matrix. Guids for 691-693 land when the drafts exist.
  :episodes
@@ -58,8 +63,10 @@
        :attach [:incogni]}
 
   690 {:guid "001d7139-1aed-4d0f-9f38-91cbc11cda8b"
-       :timecode "21m 24s / 39m 16s"
+       :timecodes {"Incogni" "21m 24s" "Namecheap" "39m 16s"}
        :attach [:incogni :namecheap]}
+  ;; 689 keeps Incogni only (TNM backfilled it); Namecheap starts at 691.
+  ;; 690 also carries Nebula at 1m13s, attached from the Ads CSV path.
 
   691 {:guid nil
        :timecode "0s"
@@ -73,10 +80,12 @@
        :timecode "0s"
        :attach [:incogni :namecheap]}}
 
- ;; Attach with the campaign uuid, not the name: Fireside's
- ;; /update_campaigns (the name -> id lookup) has returned 422 for every
- ;; sponsor and episode since 2026-10-25. add-sponsorship takes :campaign-id
- ;; to bypass it, and onboard-sponsor! returns the uuid it created.
+ ;; campaign-id here is the NUMERIC Rails id (2143), not the campaign uuid
+ ;; and not the campaign name. The sponsorship form rejects a uuid with
+ ;; "Please select an existing Campaign." add-sponsorship accepts either:
+ ;; a numeric id is posted as-is, a uuid is resolved through
+ ;; campaign-numeric-id (read from id="edit_campaign_<n>" on the edit page).
+ ;; /update_campaigns, the old name -> id lookup, has 422'd since 2026-10-25.
  :notes ["690 done 2026-10-27: Incogni, Namecheap, Nebula attached; page renders header + blurb + code."
          "Verify with fetch-sponsorship-ids: the guid must list every sponsor in :attach."
          "Then confirm the episode aside renders header + blurb on the public page."

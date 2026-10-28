@@ -176,50 +176,85 @@
     (sequential? node) (str/join " " (map node-text node))
     :else ""))
 
+(defn- tidy-text
+  "Collapse whitespace, and drop the space node-text inserts before
+  punctuation, so UNPLUGGED . becomes UNPLUGGED."
+  [s]
+  (-> (str s)
+      (str/replace #"\s+" " ")
+      (str/replace #"\s+([,.;:!?])" "$1")
+      (str/trim)))
+
 (defn- sponsors-list
-  "The sponsor <ul> that follows the SPONSORS heading, or nil."
+  "The sponsor list (ul or ol) that follows the SPONSORS heading, or nil."
   [md-zip]
   (when-let [loc (hs/select-next-loc (hs/id "sponsors") md-zip)]
     (let [node (zip/node (hs/after-subtree loc))]
-      (when (= :ul (:tag node)) node))))
+      (when (#{:ul :ol} (:tag node)) node))))
 
 (defn- strip-name-prefix
-  "Drop a leading sponsor name (and optional colon) from a blurb.
+  "Drop a leading sponsor name (and optional colon or dash) from a blurb.
 
-  The site renders the sponsor title as a heading above the message, so a
-  blurb that opens with its own name reads as a stutter, e.g. Incogni Incogni: ..."
+  Only a whole word matches, so a sponsor named Secure does not mangle
+  Securely connect to your files. The site renders the sponsor title as a
+  heading above the message, so a blurb that opens with its own name reads
+  as a stutter, e.g. Incogni Incogni: ..."
   [body name]
-  (loop [body (str/trim body)]
-    (if (str/starts-with? body name)
-      (let [rest (str/trim (subs body (count name)))
-            rest (if (str/starts-with? rest ":") (str/trim (subs rest 1)) rest)]
-        (if (= rest body) body (recur rest)))
-      body)))
+  (if (str/blank? name)
+    body
+    (let [pattern (re-pattern (str "^" (java.util.regex.Pattern/quote name)
+                                   "(?::|\\s|$)"))]
+      (loop [body (str/trim body)]
+        (if (re-find pattern body)
+          (let [rest (-> (str/replace-first body pattern "")
+                         (str/replace #"^[\u2014\u2013-]\s*" "")
+                         str/trim)]
+            (if (= rest body) body (recur rest)))
+          body)))))
+
+(defn- code-block?
+  "True when a list item child is the Code: paragraph, rather than a blurb
+  that merely contains inline code."
+  [node]
+  (boolean (re-find #"(?i)^\s*code\b" (node-text node))))
 
 (defn extract-sponsors
-  "Sponsors from the #### SPONSORS block, as [{:name :url :blurb :code}].
+  "Sponsors from the #### SPONSORS block, as
+  [{:name <Fireside sponsor title> :url :blurb :code}].
 
   Shape per list item: a linked name, the blurb, then an optional
-  **Code:** CODE paragraph. The code paragraph is dropped structurally (not
-  by string removal, which would also strip a code word repeated inside the
-  blurb), and any leading name is stripped from the blurb."
+  **Code:** CODE paragraph. The code paragraph is found by its label and
+  dropped whole, so inline code inside a blurb is left alone. Items whose
+  name is not a link are skipped: the name must be linked to reach Fireside.
+  A doc with no SPONSORS block yields []."
   [md-zip]
   (if-let [ul (sponsors-list md-zip)]
-    (->> (hs/select (hs/tag :li) ul)
+    (->> (:content ul)
+         ;; Direct children only: a nested <ul> inside an item is not a
+         ;; sponsor and its links must not become phantom entries.
+         (filter #(= :li (:tag %)))
          (keep (fn [li]
-                 (let [a (first (hs/select (hs/tag :a) li))
-                       code (first (hs/select (hs/tag :code) li))
-                       name (some-> a node-text str/trim)]
-                   (when (seq name)
-                     (let [blurb-children (remove (fn [c]
-                                                    (seq (hs/select (hs/tag :code) c)))
-                                                  (:content li))
-                           body (-> (node-text blurb-children)
-                                    (strip-name-prefix name))]
-                       {:name name
-                        :url (get-in a [:attrs :href])
-                        :blurb (str/replace body #"\s+" " ")
-                        :code (some-> code node-text str/trim)})))))
+                 (let [children (:content li)
+                       a (first (hs/select (hs/tag :a) li))
+                       href (some-> a (get-in [:attrs :href]) str/trim)
+                       name (some-> a node-text str/trim)
+                       code-par (first (filter code-block? children))
+                       blurb-children (remove #(or (= % code-par)
+                                                   (#{:ul :ol} (:tag %)))
+                                              children)
+                       code (when code-par
+                              (or (some-> (first (hs/select (hs/tag :code) code-par))
+                                          node-text str/trim)
+                                  (-> (node-text code-par)
+                                      (str/replace #"(?i)^\s*code\s*:?\s*" "")
+                                      tidy-text)))]
+                   (when (and (seq name) (seq href))
+                     {:name name
+                      :url href
+                      :blurb (-> (node-text blurb-children)
+                                 tidy-text
+                                 (strip-name-prefix name))
+                      :code (when (seq code) code)}))))
          vec)
     []))
 

@@ -260,29 +260,6 @@
     (testing "returns nil for an unknown field rather than throwing"
       (is (nil? (sh html "sponsorship[nope]"))))))
 
-(deftest fetch-campaigns-parsing-test
-  (let [om (deref (resolve 'noblepayne.fireside/option-map))
-        unescape (fn [body]
-                   (-> body
-                       (str/replace "\\\"" "\"")
-                       (str/replace "\\/" "/")
-                       om))]
-    (testing "unescapes only the sequences the endpoint emits"
-      ;; /update_campaigns returns JS, not HTML:
-      ;;   $("#x").empty().append("<option value=\"2069\">Managed Nebula<\/option>\n");
-      (let [body (str "$(\"#sponsorship_campaign_id\").empty()"
-                      ".append(\"<option value=\\\"2069\\\">Managed Nebula<\\/option>\\n\");")]
-        (is (= {"2069" "Managed Nebula"} (unescape body)))))
-
-    (testing "a blanket backslash strip would corrupt a name"
-      ;; Regression guard: (str/replace body "\\" "") also eats unicode
-      ;; escapes and backslash-space, and the label is what the exact
-      ;; match lookup keys on, so a mangled label means a lookup miss.
-      (let [body (str "append(\"<option value=\\\"1\\\">Caf\\u00e9 \\\\ Draft"
-                      "</option>\");")]
-        ;; the literal backslash and \u00e9 escape both survive
-        (is (= {"1" "Caf\\u00e9 \\\\ Draft"} (unescape body)))))))
-
 (deftest parse-episode-rows-test
   (let [row (fn [num anchor]
               (str "<tr><td class=\"data-table__cell\">" num "</td>"
@@ -385,7 +362,7 @@
                     f/campaigns-by-sponsor (fn [_ _ _] {"cid-1" "Incogni"})
                     f/campaign-message (fn [_ _ _ _] "same copy")
                     f/set-campaign-message! (fn [m] (swap! messaged conj m) true)
-                    f/add-sponsorship (fn [m] (swap! attached conj (:sponsor m))
+                    f/add-sponsorship (fn [m] (swap! attached conj m)
                                         (swap! present conj (:sponsor m))
                                         {:ok true})]
         (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
@@ -393,7 +370,9 @@
                                                        :blurb "same copy" :code "UNPLUGGED"}]
                                            :timecodes {"Incogni" "21m 24s"}})]
           (is (= ["Incogni"] @onboarded))
-          (is (= ["Incogni"] @attached))
+          (is (= ["Incogni"] (mapv :sponsor @attached)))
+          (is (= "21m 24s" (:timecode (first @attached))))
+          (is (= "cid-1" (:campaign-id (first @attached))))
           (is (empty? @messaged) "message already matches, so no patch")
           (is (= ["Incogni"] (:created r)))
           (is (= ["Incogni"] (:attached r)))
@@ -426,55 +405,73 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing after sync"
                             (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
                                                        :sponsors [{:name "Nebula" :url "u"
-                                                                   :blurb "copy" :code nil}]}))))))
+                                                                   :blurb "copy" :code nil}]})))))
+
+  (testing "an empty sponsor block is refused"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No sponsors to sync"
+                          (f/sync-episode-sponsors! {:client nil :podcast "p"
+                                                     :episode-guid "g" :sponsors []})))))
 
 (deftest set-campaign-message-test
   ;; The campaign edit form is a _method=patch POST: every field must be
-  ;; resent or Rails clears it. Only campaign[message] may change.
-  (let [posted (atom nil)
-        html (str "<form id=\"edit_campaign_2143\" method=\"post\">"
-                  "<input type=\"hidden\" name=\"authenticity_token\" value=\"T\">"
-                  "<input type=\"hidden\" name=\"_method\" value=\"patch\">"
-                  "<input type=\"text\" name=\"campaign[title]\" value=\"Incogni\">"
-                  "<textarea name=\"campaign[message]\">new copy</textarea></form>")]
-    (with-redefs [http/request (fn [_] {:body html})
-                  http/post (fn [_ opts] (reset! posted (:form-params opts)) {:status 200})]
-      (is (true? (f/set-campaign-message! {:client nil :podcast "p"
-                                           :sponsor-id "s" :campaign-id "2143"
-                                           :message "new copy"})))
-      (testing "the message is sent"
-        (is (= "new copy" (get @posted "campaign[message]"))))
-      (testing "other fields survive the patch"
-        (is (= "Incogni" (get @posted "campaign[title]")))
-        (is (= "patch" (get @posted "_method")))
-        (is (= "T" (get @posted "authenticity_token")))))))
+  ;; resent or Rails clears it. Only campaign[message] may change, and the
+  ;; write is verified by re-reading - so the fixture must be stateful.
+  (let [stored (atom "old copy")
+        html (fn [] (str "<form id=\"edit_campaign_2143\" method=\"post\">"
+                         "<input type=\"hidden\" name=\"authenticity_token\" value=\"T\">"
+                         "<input type=\"hidden\" name=\"_method\" value=\"patch\">"
+                         "<input type=\"text\" name=\"campaign[title]\" value=\"Incogni\">"
+                         "<textarea name=\"campaign[message]\">" @stored "</textarea></form>"))]
+    (testing "a uuid campaign id is resolved through the form id, then patched"
+      (with-redefs [http/request (fn [_] {:body (html)})
+                    http/post (fn [_ opts]
+                                (reset! stored (get (:form-params opts) "campaign[message]"))
+                                {:status 200})]
+        (is (true? (f/set-campaign-message! {:client nil :podcast "p" :sponsor-id "s"
+                                             :campaign-id "94e7e1f4-80fe-4cea-a39d-d6521027f2f6"
+                                             :message "new copy"})))
+        (is (= "new copy" @stored))))
+    (testing "a POST that does not persist throws"
+      (reset! stored "old copy")
+      (with-redefs [http/request (fn [_] {:body (html)})
+                    http/post (fn [_ _] {:status 200})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not persist"
+                              (f/set-campaign-message! {:client nil :podcast "p" :sponsor-id "s"
+                                                        :campaign-id "94e7e1f4-80fe-4cea-a39d-d6521027f2f6"
+                                                        :message "new copy"})))))))
 
 (deftest add-sponsorship-campaign-id-bypass-test
-  ;; Regression guard for 2026-10-25: Fireside's /update_campaigns started
-  ;; returning 422 for every sponsor on every episode, so fetch-campaigns
-  ;; could not resolve a campaign name. :campaign-id must post the given id
-  ;; without touching fetch-campaigns.
-  (let [posted (atom nil)
-        campaigns-called (atom false)]
-    (with-redefs [f/sponsorship-form (fn [_] {:action "/podcasts/p/episodes/g/sponsorships"
-                                              :auth-token "T"
-                                              :sponsors {"2155" "Nebula"}})
-                  f/sponsor-guid-by-title (fn [_] "sponsor-uuid")
-                  f/fetch-campaigns (fn [& _] (reset! campaigns-called true)
-                                      (throw (ex-info "should not be called" {})))
-                  http/post (fn [_url opts] (reset! posted (:form-params opts))
-                              {:status 302})]
-      (let [r (f/add-sponsorship {:client nil :podcast "p" :episode-guid "g"
-                                  :sponsor "Nebula" :campaign "Managed Nebula"
-                                  :campaign-id "2069" :timecode "1m 13s"})]
-        (testing "posts the supplied campaign id"
+  ;; A numeric id posts straight through; a campaign uuid is resolved through
+  ;; campaign-numeric-id. Neither may consult the dead /update_campaigns path.
+  (testing "numeric campaign id posts as-is"
+    (let [posted (atom nil) looked-up (atom false)]
+      (with-redefs [f/sponsorship-form (fn [_] {:action "/podcasts/p/episodes/g/sponsorships"
+                                                :auth-token "T"
+                                                :sponsors {"2155" "Nebula"}})
+                    f/sponsor-guid-by-title (fn [_] "sponsor-uuid")
+                    f/campaigns-by-sponsor (fn [& _] (reset! looked-up true) {})
+                    f/campaign-numeric-id (fn [& _] (throw (ex-info "should not resolve" {})))
+                    http/post (fn [_ opts] (reset! posted (:form-params opts)) {:status 302})]
+        (let [r (f/add-sponsorship {:client nil :podcast "p" :episode-guid "g"
+                                    :sponsor "Nebula" :campaign "Managed Nebula"
+                                    :campaign-id "2069" :timecode "1m 13s"})]
           (is (= "2069" (get @posted "sponsorship[campaign_id]")))
-          (is (= "2155" (get @posted "sponsorship[sponsor_id]"))))
-        (testing "never consults the broken endpoint"
-          (is (false? @campaigns-called)))
-        (testing "result echoes the campaign id"
-          (is (= "2069" (:campaign-id r)))
-          (is (= "Managed Nebula" (:campaign r))))))))
+          (is (false? @looked-up) "no campaign lookup for a numeric id")
+          (is (= "2069" (:campaign-id r)))))))
+  (testing "campaign uuid resolves to the numeric id"
+    (let [posted (atom nil) resolved (atom [])]
+      (with-redefs [f/sponsorship-form (fn [_] {:action "/podcasts/p/episodes/g/sponsorships"
+                                                :auth-token "T"
+                                                :sponsors {"2155" "Nebula"}})
+                    f/sponsor-guid-by-title (fn [_] "sponsor-uuid")
+                    f/campaigns-by-sponsor (fn [& _] {"cid-uuid" "Managed Nebula"})
+                    f/campaign-numeric-id (fn [_ _ _ cid] (swap! resolved conj cid) "2069")
+                    http/post (fn [_ opts] (reset! posted (:form-params opts)) {:status 302})]
+        (f/add-sponsorship {:client nil :podcast "p" :episode-guid "g"
+                            :sponsor "Nebula" :campaign "Managed Nebula"
+                            :campaign-id "cid-uuid" :timecode "0s"})
+        (is (= ["cid-uuid"] @resolved))
+        (is (= "2069" (get @posted "sponsorship[campaign_id]")))))))
 
 (deftest sync-sponsorships-key-access-test
   ;; Regression guard: sync-sponsorships read :start_timecode while

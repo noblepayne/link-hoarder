@@ -2,14 +2,14 @@
 
 Draft status. Dual-feed pattern proven on Linux Unplugged 687.
 Covers: scrape → set-show-meta → purge/add links → chapters → sponsors
-(main feed only) → upload-and-verify-mp3 → schedule-episode! → public-site check.
+(main feed only) → upload-twice-and-verify-mp3 → schedule-episode! → public-site check.
 
 Conventions: `EP` = episode number, e.g. `687`. All REPL snippets assume
 `(require '[noblepayne.fireside :as fs] '[noblepayne.link-hoarder :as lh])`.
 
 ## 0. Prerequisites
 
-- Branch: `ep687-audio-flow`. Work from the repo root.
+- Branch: `main` (`ep687-audio-flow` is fully merged). Work from the repo root.
 - `.env` in repo root with exactly:
   ```
   FIRESIDE_BASE_URL=https://app.fireside.fm
@@ -205,6 +205,34 @@ not an error. The Jupiter membership (`Jupiter Signal Network Membership` /
 Membership"` explicitly at `0s` or the call refuses (proven on 688, which
 shipped without it until caught on the public page).
 
+### 5b. Doc-driven sponsors (preferred since 2026-10-28)
+
+The show-notes doc carries a `#### SPONSORS` block. The scrape returns
+`(:sponsors data)` as `[{:name :url :blurb :code}]`, and one call reconciles
+everything — creates any missing sponsor and its single campaign, updates the
+campaign message when the copy differs, and attaches what the episode is
+missing. Main feed only:
+
+```clojure
+(fs/sync-episode-sponsors! {:client c :podcast "linuxunplugged"
+                            :episode-guid (:guid data)
+                            :sponsors (:sponsors data)
+                            :timecodes {"Incogni" "21m 24s"
+                                        "Namecheap" "39m 16s"}})
+;; => {:created [...] :messaged [...] :attached [...] :present [...] :verified true}
+```
+
+It is idempotent: already-attached sponsors come back in `:present` and are
+not re-posted. `:url` and `:code` apply only at creation; `:blurb` is
+reconciled on every run. A failure mid-run throws with `:progress` so you can
+see what already landed.
+
+Check the parsed block before running it:
+
+```clojure
+(:sponsors data)   ; names must match Fireside sponsor titles exactly
+```
+
 New sponsor onboarding (proven twice: Connecten on 687, Hostinger on 688)
 is one call — decide the five values from the transcript read + the doc,
 then run it. Title must exactly equal the Ads CSV `name`; message is
@@ -243,13 +271,13 @@ wait
 `--tn` must equal the episode number (ID3 track number). Then:
 
 ```clojure
-(fs/upload-and-verify-mp3 {:client c :podcast "linuxunplugged"
+(fs/upload-twice-and-verify-mp3 {:client c :podcast "linuxunplugged"
                            :episode-guid (:guid data)
                            :mp3-path (str work-dir "Linux Unplugged 687 (Ads).mp3")
                            :chapters-file (str work-dir "Linux Unplugged 687 (Ads) Chapters.csv")})
 ;; => {:status {... :url "https://...mp3"} :report {:chapters 7 :verified true}}
 
-(fs/upload-and-verify-mp3 {:client c :podcast "adfree"
+(fs/upload-twice-and-verify-mp3 {:client c :podcast "adfree"
                            :episode-guid (:guid adfree-data)
                            :mp3-path (str work-dir "Linux Unplugged 687 (Premium).mp3")
                            :chapters-file (str work-dir "Linux Unplugged 687 (Premium) Chapters.csv")})
@@ -258,7 +286,9 @@ wait
 What it does: S3 presign → upload → attach → poll `check_mp3_status` →
 download processed bytes → ffprobe chapter compare (count + trimmed-title +
 start within 2.0s). Chapters must already be on the episode — Fireside embeds
-them at processing time. One pass is enough (verified live on two episodes).
+them at processing time. Always at least two passes: the first processing of
+fresh audio repeatedly comes back without embedded chapters (688 needed two,
+689 needed three). Keep re-attaching until `:report {:verified true}`.
 
 Verify: `:report {:verified true}`. Independently:
 

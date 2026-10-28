@@ -443,37 +443,13 @@
                                     "\"[^>]*>(.*?)</select>"))
                    html)))
 
-(defn fetch-campaigns
-  "Campaigns available for a sponsor, as a {id name} map.
-
-  The new-sponsorship form ships with a single placeholder campaign and
-  populates the real list by hitting
-  /episodes/<guid>/update_campaigns?sponsor_id=<id>, which responds with a
-  jQuery snippet rather than HTML. Scraping the initial page therefore
-  yields exactly one wrong option, which is how a naive implementation
-  silently files a sponsorship under the wrong campaign."
-  [client podcast episode-guid sponsor-id]
-  (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
-                           "episodes" episode-guid "update_campaigns"])
-        body (:body (http/request {:method :get
-                                   :url (str url "?sponsor_id=" sponsor-id)
-                                   :http-client client}))]
-    ;; Unescape only the two sequences the endpoint actually emits. A
-    ;; blanket str/repair of "\\" would also eat unicode escapes and
-    ;; backslash-space inside a campaign name, and the label is what the
-    ;; exact-match lookup keys on.
-    (-> body
-        (str/replace "\\\"" "\"")
-        (str/replace "\\/" "/")
-        option-map)))
-
 (defn campaigns-by-sponsor
   "Campaigns for a sponsor as {uuid title}, scraped from the sponsor's
   campaigns index page.
 
-  Replaces fetch-campaigns, whose endpoint (/update_campaigns) has returned
-  422 for every sponsor and episode since 2026-10-25. The index is plain
-  HTML, so this needs no dropdown lookup at all."
+  Fireside's /update_campaigns endpoint returned 422 for every sponsor and
+  episode from 2026-10-25, so the campaigns index is the read path. It is
+  plain HTML, so this needs no dropdown lookup at all."
   [client podcast sponsor-id]
   (let [page (fetch-as-hickory {:http-client client
                                 :url (str FIRESIDE-BASE-URL "/podcasts/" podcast
@@ -505,8 +481,7 @@
 
 (defn sponsorship-form
   "Fetch the 'new sponsorship' page and return
-   {:action \"/podcasts/...\" :auth-token \"...\"
-    :sponsors {id name} :campaigns {id name}}"
+   {:action \"/podcasts/...\" :auth-token \"...\" :sponsors {id name}}"
   [{:keys [client podcast episode-guid]}]
   (let [new-url (str/join "/" [FIRESIDE-BASE-URL
                                "podcasts" podcast
@@ -526,8 +501,7 @@
                         (first))]
     {:action (-> form :attrs :action)
      :auth-token auth-token
-     :sponsors (option-map (select-html html "sponsorship[sponsor_id]"))
-     :campaigns (option-map (select-html html "sponsorship[campaign_id]"))}))
+     :sponsors (option-map (select-html html "sponsorship[sponsor_id]"))}))
 
 (defn sponsor-guid-by-title
   "Find a podcast sponsor by exact display title. Returns the uuid or nil.
@@ -1411,21 +1385,21 @@
   ["1848" "1849" "2108"])
 
 (defn- campaign-edit
-  "Fetch a campaign's edit page.
+  "Fetch a campaign's edit page by campaign UUID.
 
   Returns {:base url :form-id id :page hickory}. Campaign pages are keyed by
-  uuid; only the form's DOM id is numeric."
+  uuid; only the form's DOM id is the numeric Rails id."
   [client podcast sponsor-id campaign-id]
   (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
                             "sponsors" sponsor-id "campaigns" campaign-id])
         html (str (:body (http/request {:method :get :http-client client
                                         :url (str base "/edit")})))
-        form-id (if (re-matches #"\d+" (str campaign-id))
-                  (str "edit_campaign_" campaign-id)
-                  (str "edit_campaign_"
-                       (or (second (re-find #"edit_campaign_(\d+)" html))
-                           (throw (ex-info "Campaign form id not found"
-                                           {:campaign campaign-id})))))]
+        form-id (str "edit_campaign_"
+                     (or (second (re-find #"edit_campaign_(\d+)" html))
+                         (throw (ex-info "Campaign form id not found"
+                                         {:campaign campaign-id
+                                          :sponsor-id sponsor-id
+                                          :url (str base "/edit")}))))]
     {:base base :form-id form-id
      :page (hickory/as-hickory (hickory/parse html))}))
 
@@ -1444,7 +1418,10 @@
   the whole form and overrides only the message.
 
   `onboard-sponsor!` sets :message at creation only, so this is the way to
-  correct copy on a sponsor that already exists."
+  correct copy on a sponsor that already exists.
+
+  :campaign-id is the campaign UUID (what campaigns-by-sponsor and
+  onboard-sponsor! return), not the numeric Rails id."
   [{:keys [client podcast sponsor-id campaign-id message]}]
   (when (str/blank? message)
     (throw (ex-info "Campaign message must not be blank" {:campaign campaign-id})))
@@ -1475,8 +1452,13 @@
     :timecodes       map of sponsor name -> timecode words, default 0s
     :campaign-titles map of sponsor name -> campaign title, default the name
 
+  :url and :code are applied only when the sponsor is created; editing them
+  on an existing sponsor is still a Fireside UI change. :blurb is reconciled
+  on every run.
+
   Returns {:created [...] :messaged [...] :attached [...] :present [...]
-           :verified true}, and throws if any sponsor is missing afterwards."
+  :verified true}. Throws if any sponsor is missing afterwards, carrying
+  :progress so a partial run is recoverable."
   [{:keys [client podcast episode-guid sponsors timecodes campaign-titles]}]
   (when (empty? sponsors)
     (throw (ex-info "No sponsors to sync" {:episode-guid episode-guid})))
@@ -1484,47 +1466,59 @@
         result
         (reduce
          (fn [acc {:keys [name url blurb code]}]
-           (let [ct (get campaign-titles name name)
-                 tc (get timecodes name "0s")
-                 existing (sponsor-guid-by-title {:client client :podcast podcast :title name})
-                 created? (nil? existing)
-                 sid (or existing
-                         (:sponsor-guid
-                          (onboard-sponsor! {:client client :podcast podcast
-                                             :title name :url url
-                                             :campaign-title ct
-                                             :promo-code (or code "")
-                                             :message blurb})))
-                 campaigns (campaigns-by-sponsor client podcast sid)
-                 cid (or (key (first (filter (fn [[_ t]] (= t ct)) campaigns)))
-                         (throw (ex-info "Campaign not found for sponsor"
-                                         {:sponsor name :campaign ct
-                                          :known (vec (vals campaigns))})))
-                 stored (campaign-message client podcast sid cid)
-                 messaged? (not= (str/trim (str stored)) (str/trim (str blurb)))]
-             (when messaged?
-               (set-campaign-message! {:client client :podcast podcast
-                                       :sponsor-id sid :campaign-id cid
-                                       :message blurb}))
-             (when-not (contains? @present name)
-               (add-sponsorship {:client client :podcast podcast
-                                 :episode-guid episode-guid
-                                 :sponsor name :campaign ct :campaign-id cid
-                                 :timecode tc})
-               (swap! present conj name))
-             (cond-> acc
-               created? (update :created conj name)
-               messaged? (update :messaged conj name)
-               (not (contains? (:before acc) name)) (update :attached conj name)
-               (contains? (:before acc) name) (update :present conj name))))
-         {:before @present :created [] :messaged [] :attached [] :present []}
+           (try
+             (let [ct (get campaign-titles name name)
+                   tc (or (get timecodes name) "0s")
+                   existing (sponsor-guid-by-title {:client client :podcast podcast :title name})
+                   created? (nil? existing)
+                   sid (or existing
+                           (:sponsor-guid
+                            (onboard-sponsor! {:client client :podcast podcast
+                                               :title name :url url
+                                               :campaign-title ct
+                                               :promo-code (or code "")
+                                               :message blurb})))
+                   campaigns (campaigns-by-sponsor client podcast sid)
+                   cid (or (key (first (filter (fn [[_ t]] (= t ct)) campaigns)))
+                           (throw (ex-info "Campaign not found for sponsor"
+                                           {:sponsor name :campaign ct
+                                            :known (vec (vals campaigns))})))
+                   stored (campaign-message client podcast sid cid)
+                   messaged? (not= (str/trim (str stored)) (str/trim (str blurb)))
+                   already? (contains? @present name)]
+               (when messaged?
+                 (set-campaign-message! {:client client :podcast podcast
+                                         :sponsor-id sid :campaign-id cid
+                                         :message blurb}))
+               (when-not already?
+                 (add-sponsorship {:client client :podcast podcast
+                                   :episode-guid episode-guid
+                                   :sponsor name :campaign ct :campaign-id cid
+                                   :timecode tc})
+                 (swap! present conj name))
+               (cond-> acc
+                 created? (update :created conj name)
+                 messaged? (update :messaged conj name)
+                 already? (update :present conj name)
+                 (not already?) (update :attached conj name)))
+             (catch clojure.lang.ExceptionInfo e
+               ;; A mid-run failure leaves earlier sponsors already written.
+               ;; Carry what happened so the operator can tell whether to re-run.
+               (throw (ex-info (ex-message e)
+                               (merge (ex-data e)
+                                      {:sponsor name
+                                       :episode-guid episode-guid
+                                       :progress (select-keys acc [:created :messaged
+                                                                   :attached :present])}))))))
+         {:created [] :messaged [] :attached [] :present []}
          sponsors)
         ;; Verify by re-reading the episode, not by trusting the atom.
-        after (set (map :sponsor (fetch-sponsorship-ids client podcast episode-guid)))
-        missing (remove after (map :name sponsors))]
+        after-names (set (map :sponsor (fetch-sponsorship-ids client podcast episode-guid)))
+        missing (remove #(contains? after-names %) (map :name sponsors))]
     (when (seq missing)
-      (throw (ex-info "Sponsors missing after sync" {:missing (vec missing)})))
-    (-> result (dissoc :before) (assoc :verified true))))
+      (throw (ex-info "Sponsors missing after sync"
+                      {:episode-guid episode-guid :missing (vec missing)})))
+    (assoc result :verified true)))
 
 (defn set-participants!
   "Set host/guest checkboxes without touching anything else. host-ids
@@ -1815,6 +1809,13 @@
 
 (comment
 
+  ;; Sponsors from the doc's SPONSORS block: create + message + attach in one
+  ;; call (main feed only; idempotent, already-attached come back in :present).
+  ;; (sync-episode-sponsors! {:client c :podcast "linuxunplugged"
+  ;;                          :episode-guid (:guid data)
+  ;;                          :sponsors (:sponsors data)
+  ;;                          :timecodes {"Incogni" "21m 24s"}})
+
   ;; Weekly flow scratch: set the three defs, eval top to bottom.
   ;; Episode numbers are the Fireside slugs; guids via fetch-episode-ids.
   ;; (Values below are 687's, kept as a working example — replace per episode.)
@@ -1914,8 +1915,11 @@
                   :tags (:tags data)}))
 
 (defn publish-episode
-  "Full workflow: fetch markdown data and push to Fireside.
-  
+  "Full workflow: fetch markdown data and push meta + links to Fireside.
+
+  Does NOT attach sponsors - call sync-episode-sponsors! separately (the doc's
+  SPONSORS block is otherwise ignored on this path).
+
   url - docs.lol show notes URL
   podcast - podcast slug (e.g. \"linuxunplugged\", \"adfree\")
   guid-override - optional GUID to use instead of markdown GUID (for adfree)
@@ -1943,6 +1947,7 @@
      (println "Podcast:" podcast)
      (println "Links to add:" total)
      (println "Guests:" (count (:guests data)))
+     (println "Sponsors (not attached by this fn):" (count (:sponsors data)))
 
      (println "Creating HTTP client...")
      (let [client (http-client)]

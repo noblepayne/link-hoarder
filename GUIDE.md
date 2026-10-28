@@ -180,13 +180,14 @@ skipped and reported in `:skipped` rather than silently dropped.
 
 Three things that will waste your time if you don't know them:
 
-1. **The campaign dropdown is populated by JavaScript.** The new-sponsorship
-   page ships with a single placeholder option ("1Password Extended Access
-   Management"). The real list comes from
-   `/episodes/<guid>/update_campaigns?sponsor_id=<id>`, which returns a
-   *jQuery snippet*, not HTML. Scraping the page directly yields exactly one
-   wrong option and would silently file a sponsorship under the wrong
-   campaign. Use `fetch-campaigns`.
+1. **Do not use the campaign dropdown.** The new-sponsorship page ships with
+   a single placeholder option ("1Password Extended Access Management"), and
+   `/update_campaigns` — the endpoint that used to fill it — has returned
+   **422 for every sponsor and episode since 2026-10-25**. Campaigns are read
+   from the sponsor's own `/campaigns` index (`campaigns-by-sponsor`), which
+   gives uuids; the sponsorship POST needs the **numeric** Rails id, exposed
+   only as `id="edit_campaign_<n>"` on the campaign edit page.
+   `add-sponsorship` resolves uuid -> numeric for you.
 2. **Post urlencoded, not multipart, despite the form saying
    `enctype="multipart/form-data"`.** Multipart returns **500**.
 3. **Updates post to the sponsorship's own URL with `_method=patch`** — not
@@ -241,6 +242,12 @@ done from code on 2026-10-04 and every step verified live:
 4. **Attach it to the episode** with `add-sponsorship` (sponsor + words
    timecode). This was the first successful `add-sponsorship` call — the
    MapEntry bug meant sponsorship creation had never worked before.
+
+5. **Or skip steps 2-4.** When the show-notes doc carries a `#### SPONSORS`
+   block, `sync-episode-sponsors!` creates the sponsor + campaign, reconciles
+   the message, and attaches, in one idempotent pass:
+   `(fs/sync-episode-sponsors! {:client c :podcast "linuxunplugged"
+   :episode-guid g :sponsors (:sponsors data)})`.
 
 Source the copy from the show notes, not from memory: the link text, the
 thanks line, and the read itself usually carry the product name, the URL,
