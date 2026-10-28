@@ -1425,9 +1425,17 @@
     (throw (ex-info "Campaign message must not be blank" {:campaign campaign-id})))
   (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
                             "sponsors" sponsor-id "campaigns" campaign-id])
-        form-id (str "edit_campaign_" campaign-id)
-        edit-page #(fetch-as-hickory {:http-client client :url (str base "/edit")})
-        controls (successful-controls (edit-page) form-id)
+        ;; Campaign pages are keyed by uuid; only the form's DOM id is numeric.
+        edit-html #(:body (http/request {:method :get :http-client client
+                                         :url (str base "/edit")}))
+        page #(hickory/as-hickory (hickory/parse (str (edit-html))))
+        form-id (if (re-matches #"\d+" (str campaign-id))
+                  (str "edit_campaign_" campaign-id)
+                  (str "edit_campaign_"
+                       (or (second (re-find #"edit_campaign_(\d+)" (str (edit-html))))
+                           (throw (ex-info "Campaign form id not found"
+                                           {:campaign campaign-id})))))
+        controls (successful-controls (page) form-id)
         response (http/post base {:http-client client
                                   :throw-exceptions false
                                   :form-params (assoc controls "campaign[message]" message)})]
@@ -1435,7 +1443,7 @@
       (throw (ex-info "Failed to update campaign message"
                       {:status (:status response) :campaign campaign-id})))
     ;; Re-read, never trust the POST status.
-    (let [stored (get (successful-controls (edit-page) form-id) "campaign[message]")]
+    (let [stored (get (successful-controls (page) form-id) "campaign[message]")]
       (when-not (= (str/trim (str stored)) (str/trim (str message)))
         (throw (ex-info "Campaign message did not persist"
                         {:campaign campaign-id :expected message :stored stored}))))
