@@ -374,6 +374,30 @@
         (is (instance? clojure.lang.MapEntry entry))
         (is (sequential? entry))))))
 
+(deftest set-campaign-message-test
+  ;; The campaign edit form is a _method=patch POST: every field must be
+  ;; resent or Rails clears it. Only campaign[message] may change.
+  (let [posted (atom nil)
+        page {:tag :root
+              :content [{:tag :form
+                         :attrs {:id "edit_campaign_2143" :method "post"}
+                         :content [{:tag :input :attrs {:type "hidden" :name "authenticity_token" :value "T"}}
+                                   {:tag :input :attrs {:type "hidden" :name "_method" :value "patch"}}
+                                   {:tag :input :attrs {:type "text" :name "campaign[title]" :value "Incogni"}}
+                                   {:tag :input :attrs {:type "text" :name "campaign[url]" :value "https://incogni.com/unplugged"}}
+                                   {:tag :textarea :attrs {:name "campaign[message]"} :content ["new copy"]}]}]}]
+    (with-redefs [f/fetch-as-hickory (fn [_] page)
+                  http/post (fn [_ opts] (reset! posted (:form-params opts)) {:status 200})]
+      (is (true? (f/set-campaign-message! {:client nil :podcast "p"
+                                           :sponsor-id "s" :campaign-id "2143"
+                                           :message "new copy"})))
+      (testing "the message is sent"
+        (is (= "new copy" (get @posted "campaign[message]"))))
+      (testing "other fields survive the patch"
+        (is (= "Incogni" (get @posted "campaign[title]")))
+        (is (= "patch" (get @posted "_method")))
+        (is (= "T" (get @posted "authenticity_token")))))))
+
 (deftest add-sponsorship-campaign-id-bypass-test
   ;; Regression guard for 2026-10-25: Fireside's /update_campaigns started
   ;; returning 422 for every sponsor on every episode, so fetch-campaigns

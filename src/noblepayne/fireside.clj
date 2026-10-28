@@ -1410,6 +1410,37 @@
   with no guests unless Wes names some."
   ["1848" "1849" "2108"])
 
+(defn set-campaign-message!
+  "Replace a campaign's message (the blurb shown in the episode aside and on
+  the site).
+
+  The campaign edit form posts back to the campaign URL with a _method=patch
+  override, and every field must be resent or it is cleared - so this mirrors
+  the whole form and overrides only the message.
+
+  `onboard-sponsor!` sets :message at creation only, so this is the way to
+  correct copy on a sponsor that already exists."
+  [{:keys [client podcast sponsor-id campaign-id message]}]
+  (when (str/blank? message)
+    (throw (ex-info "Campaign message must not be blank" {:campaign campaign-id})))
+  (let [base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                            "sponsors" sponsor-id "campaigns" campaign-id])
+        form-id (str "edit_campaign_" campaign-id)
+        edit-page #(fetch-as-hickory {:http-client client :url (str base "/edit")})
+        controls (successful-controls (edit-page) form-id)
+        response (http/post base {:http-client client
+                                  :throw-exceptions false
+                                  :form-params (assoc controls "campaign[message]" message)})]
+    (when-not (<= 200 (:status response) 302)
+      (throw (ex-info "Failed to update campaign message"
+                      {:status (:status response) :campaign campaign-id})))
+    ;; Re-read, never trust the POST status.
+    (let [stored (get (successful-controls (edit-page) form-id) "campaign[message]")]
+      (when-not (= (str/trim (str stored)) (str/trim (str message)))
+        (throw (ex-info "Campaign message did not persist"
+                        {:campaign campaign-id :expected message :stored stored}))))
+    true))
+
 (defn set-participants!
   "Set host/guest checkboxes without touching anything else. host-ids
   and guest-ids are person-ID strings; hosts default to the three
