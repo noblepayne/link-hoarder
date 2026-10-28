@@ -1,5 +1,7 @@
 (ns noblepayne.link-hoarder-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
+            [noblepayne.link-hoarder :as lh]
             [noblepayne.link-hoarder :refer [dedup-links
                                              dedupe-tags
                                              normalize-href
@@ -161,3 +163,32 @@
 
   (testing "empty in, empty out"
     (is (= [] (dedupe-tags [])))))
+
+(deftest extract-sponsors-test
+  ;; The doc grew a structured SPONSORS block (2026-10-29). The site renders
+  ;; the sponsor title as a heading, so a blurb that repeats the name must be
+  ;; trimmed, and the **Code:** paragraph must be dropped structurally.
+  (let [md (str "#### SPONSORS\n\n"
+                "- **[Nebula](https://defined.net/unplugged)**  \n"
+                "  Meet Managed Nebula from Defined Networking.\n\n"
+                "- **[Incogni](https://incogni.com/unplugged)**  \n"
+                "  Incogni: They can't harm you if they can't find you! "
+                "Use code **UNPLUGGED** for 60% off.\n\n"
+                "  **Code:** `UNPLUGGED`\n")
+        tmp (java.io.File/createTempFile "sponsors" ".md")]
+    (try
+      (spit tmp md)
+      (let [sponsors (lh/extract-sponsors (lh/fetch-markdown (.getAbsolutePath tmp)))]
+        (testing "one entry per sponsor"
+          (is (= 2 (count sponsors))))
+        (testing "name, url and code are read"
+          (is (= ["Nebula" "Incogni"] (map :name (take 2 sponsors))))
+          (is (= "https://defined.net/unplugged" (:url (first sponsors))))
+          (is (= "UNPLUGGED" (:code (second sponsors)))))
+        (testing "a leading sponsor name is stripped from the blurb"
+          (is (str/starts-with? (:blurb (second sponsors)) "They can't harm you")))
+        (testing "the code word inside the blurb is preserved"
+          (is (str/includes? (:blurb (second sponsors)) "Use code UNPLUGGED")))
+        (testing "the Code: paragraph is not part of the blurb"
+          (is (not (str/includes? (:blurb (second sponsors)) "Code:")))))
+      (finally (.delete tmp)))))

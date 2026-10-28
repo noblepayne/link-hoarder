@@ -121,7 +121,10 @@
          (comp
           (map (fn [loc]
                  (let [link-data (extract-link-data (zip/node loc))]
-                   (when-not (str/starts-with? (:title link-data) "READ:")
+                   (when (and (not (str/starts-with? (str (:title link-data)) "READ:"))
+                              ;; A heading like [Part 1]() parses as a link
+                              ;; with no href; posting it would push a null URL.
+                              (seq (:href link-data)))
                      (assoc link-data :quote (get-related-blockquote loc))))))
           (filter some?))
          (find-links md-zip))))
@@ -161,6 +164,64 @@
                     (assoc guest-data :bio (get-related-blockquote loc))))))
          (filter some?))
         (find-guests md-zip)))
+
+(defn- node-text
+  "All text under a hiccup node, joined with single spaces. Inline markup
+  (strong, em, code) becomes plain text: the sponsor blurb is stored as one
+  plain string."
+  [node]
+  (cond
+    (string? node) node
+    (map? node) (str/join " " (map node-text (:content node)))
+    (sequential? node) (str/join " " (map node-text node))
+    :else ""))
+
+(defn- sponsors-list
+  "The sponsor <ul> that follows the SPONSORS heading, or nil."
+  [md-zip]
+  (when-let [loc (hs/select-next-loc (hs/id "sponsors") md-zip)]
+    (let [node (zip/node (hs/after-subtree loc))]
+      (when (= :ul (:tag node)) node))))
+
+(defn- strip-name-prefix
+  "Drop a leading sponsor name (and optional colon) from a blurb.
+
+  The site renders the sponsor title as a heading above the message, so a
+  blurb that opens with its own name reads as a stutter, e.g. Incogni Incogni: ..."
+  [body name]
+  (loop [body (str/trim body)]
+    (if (str/starts-with? body name)
+      (let [rest (str/trim (subs body (count name)))
+            rest (if (str/starts-with? rest ":") (str/trim (subs rest 1)) rest)]
+        (if (= rest body) body (recur rest)))
+      body)))
+
+(defn extract-sponsors
+  "Sponsors from the #### SPONSORS block, as [{:name :url :blurb :code}].
+
+  Shape per list item: a linked name, the blurb, then an optional
+  **Code:** CODE paragraph. The code paragraph is dropped structurally (not
+  by string removal, which would also strip a code word repeated inside the
+  blurb), and any leading name is stripped from the blurb."
+  [md-zip]
+  (if-let [ul (sponsors-list md-zip)]
+    (->> (hs/select (hs/tag :li) ul)
+         (keep (fn [li]
+                 (let [a (first (hs/select (hs/tag :a) li))
+                       code (first (hs/select (hs/tag :code) li))
+                       name (some-> a node-text str/trim)]
+                   (when (seq name)
+                     (let [blurb-children (remove (fn [c]
+                                                    (seq (hs/select (hs/tag :code) c)))
+                                                  (:content li))
+                           body (-> (node-text blurb-children)
+                                    (strip-name-prefix name))]
+                       {:name name
+                        :url (get-in a [:attrs :href])
+                        :blurb (str/replace body #"\s+" " ")
+                        :code (some-> code node-text str/trim)})))))
+         vec)
+    []))
 
 (defn- extract-single-meta [md-zip id]
   (let [id-name (name id)]
@@ -229,7 +290,9 @@
          :links
          (extract-links mdzip)
          :guests
-         (extract-guests mdzip)))
+         (extract-guests mdzip)
+         :sponsors
+         (extract-sponsors mdzip)))
 
 (defn -main
   "Invoke me with clojure -M -m noblepayne.link-hoarder"
