@@ -5,16 +5,19 @@
 ;; will never attach them (it keys off the CSV and skips `Dynamic N` rows by
 ;; design). They must be attached with `add-sponsorship`.
 ;;
-;; Timecode: dynamic inserts have no fixed position in the Fireside audio, so
-;; attach at "0s". The timecode is only a field on the sponsorship record; the
-;; page listing (header + blurb) is the deliverable.
+; Timecode: dynamic inserts have no fixed position in the Fireside audio. The
+;; timecode is not rendered on the site - it only orders the sponsor aside - so
+;; we set it to the ART19 slot time when known. That makes the list read in the
+;; order a listener meets the sponsors, at the cost of a possible swap until
+;; someone confirms which sponsor is in which slot.
 ;;
 ;; `:title` is the Fireside sponsor title and an exact-match join key. Never
 ;; vary the spelling or future CSV syncs will silently skip the row.
 ;; `:campaign-title` must be the existing campaign when the sponsor already
 ;; exists (Fireside resolves it by name), otherwise the name to create.
-;; `:message` must match the feed blurb exactly - it is what keeps
-;; linuxunplugged.com and the podcast notes from disagreeing.
+;; `:message` must match the feed blurb, with one exception: the site renders
+;; the sponsor title as a heading above the message, so a leading "Name: " in
+;; the copy doubles it on screen and should be trimmed.
 
 {:podcast "linuxunplugged"
 
@@ -25,7 +28,10 @@
                :campaign-title "Incogni"
                :sponsor-uuid "736e7e47-66ec-4ca1-b25e-d1873983129e"
                :campaign-id "2143"
-               :message "Use code UNPLUGGED for 60% off an annual plan."}
+               ;; Trimmed the leading "Incogni: " from Chris's copy: the page
+               ;; renders the sponsor title as a heading, so the prefix read as
+               ;; "Incogni Incogni: ...".
+               :message "They can't harm you if they can't find you! Take back control of your personal data today. Go to incogni.com/unplugged and use code unplugged for 60% off an annual plan. It's completely risk-free with a 30-day money-back guarantee."}
 
   :namecheap  {:title "Namecheap"
                :url "https://namecheap.promo"
@@ -47,8 +53,12 @@
 
  ;; Attach matrix. Guids for 691-693 land when the drafts exist.
  :episodes
- {690 {:guid "001d7139-1aed-4d0f-9f38-91cbc11cda8b"
-       :timecode "0s"
+ {689 {:guid "b37eb1a6-c475-4f1a-b5e1-a38d9ef52627"
+       :timecode "28m 21s"
+       :attach [:incogni]}
+
+  690 {:guid "001d7139-1aed-4d0f-9f38-91cbc11cda8b"
+       :timecode "21m 24s / 39m 16s"
        :attach [:incogni :namecheap]}
 
   691 {:guid nil
