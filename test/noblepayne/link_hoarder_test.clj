@@ -1,11 +1,10 @@
 (ns noblepayne.link-hoarder-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [noblepayne.link-hoarder :as lh]
-            [noblepayne.link-hoarder :refer [dedup-links
-                                             dedupe-tags
-                                             normalize-href
-                                             preview-markdown]]))
+            [noblepayne.link-hoarder :as lh :refer [dedup-links
+                                                    dedupe-tags
+                                                    normalize-href
+                                                    preview-markdown]]))
 
 (deftest dedup-links-test
   (testing "preserves order, first occurrence wins"
