@@ -351,66 +351,156 @@
         (is (instance? clojure.lang.MapEntry entry))
         (is (sequential? entry))))))
 
+(deftest read-sponsorships-witness-test
+  (let [guid "00852749-f7d1-4970-b2d1-d316397a9b64"
+        sid "a3f4a2d6-ee25-4c6e-8e0e-0692988d7283"
+        cid "5723f24c-7462-4f14-99b4-fa90c7a153a5"
+        block (str "<div class=\"accordion-item\"><div id=\"collapse-sponsorship-" guid "\">"
+                   "<span class=\"accordion-heading__title\">Managed Nebula</span>"
+                   "<span class=\"accordion-heading__metadata\"><i class=\"fas fa-clock\" aria-hidden=\"true\"></i> 1m 13s</span>"
+                   "<span class=\"accordion-heading__subtitle\">Nebula</span>"
+                   "<a href=\"/sponsors/" sid "/campaigns/" cid "/edit\">x</a></div></div></div>")
+        page (str "<a href=\"/x/sponsorships/new\">new</a>" block)]
+    (testing "a witnessed page returns rows with sponsor and campaign ids"
+      (with-redefs [f/fetch-page! (fn [_ _ _] page)]
+        (let [{:keys [rows rendered]} (f/read-sponsorships nil "p" "g")]
+          (is (= 1 rendered))
+          (is (= [{:sponsor "Nebula" :sponsor-id sid :campaign-id cid}]
+                 (mapv #(select-keys % [:sponsor :sponsor-id :campaign-id]) rows))))))
+    (testing "a page without the new-sponsorship affordance is refused"
+      (with-redefs [f/fetch-page! (fn [_ _ _] block)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not look like one"
+                              (f/read-sponsorships nil "p" "g")))))
+    (testing "an item that renders but does not parse is refused, not read as zero"
+      (with-redefs [f/fetch-page! (fn [_ _ _] (str page "<div class=\"accordion-item\">broken"))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not parse"
+                              (f/read-sponsorships nil "p" "g")))))))
+
+(deftest plan-sponsors-test
+  (let [rows (fn [pairs] (mapv (fn [[s c]] {:sponsor s :campaign c}) pairs))]
+    (testing "plan is read-only and names each operation"
+      (let [writes (atom [])]
+        (with-redefs [f/read-sponsorships (fn [_ _ _] {:rows (rows [["Nebula" "Managed Nebula"]])
+                                                       :rendered 1})
+                      f/sponsor-guid-by-title (fn [_] "sid")
+                      f/campaigns-by-sponsor (fn [_ _ _] {"cid" "Incogni"})
+                      f/campaign-message (fn [_ _ _ _] "old copy")
+                      f/onboard-sponsor! (fn [_] (swap! writes conj :onboard) nil)
+                      f/set-campaign-message! (fn [_] (swap! writes conj :message))
+                      f/add-sponsorship (fn [_] (swap! writes conj :attach) {:ok true})]
+          (let [plan (f/plan-sponsors {:client nil :podcast "p" :episode-guid "g"
+                                       :sponsors [{:name "Incogni" :url "u"
+                                                   :blurb "new copy" :code "X"}]})]
+            (is (empty? @writes) "planning must not write")
+            (is (= [{:sponsor "Incogni" :campaign "Incogni" :op :attach+message
+                     :timecode "0s" :new-sponsor? false :message-from "old copy"}]
+                   (:actions plan)))
+            (is (= ["Nebula"] (:unexpected plan)))))))
+    (testing "no-op when the sponsorship is present on the right campaign"
+      (with-redefs [f/read-sponsorships (fn [_ _ _] {:rows (rows [["Incogni" "Incogni"]])
+                                                     :rendered 1})
+                    f/sponsor-guid-by-title (fn [_] "sid")
+                    f/campaigns-by-sponsor (fn [_ _ _] {"cid" "Incogni"})
+                    f/campaign-message (fn [_ _ _ _] "same")]
+        (is (= :noop (get-in (f/plan-sponsors {:client nil :podcast "p" :episode-guid "g"
+                                               :sponsors [{:name "Incogni" :url "u" :blurb "same"}]})
+                             [:actions 0 :op])))))
+    (testing "a campaign change is a planned attach, not a silent no-op"
+      (with-redefs [f/read-sponsorships (fn [_ _ _] {:rows (rows [["Hostinger" "Hostinger AI Builder"]])
+                                                     :rendered 1})
+                    f/sponsor-guid-by-title (fn [_] "sid")
+                    f/campaigns-by-sponsor (fn [_ _ _] {"c2" "Hostinger 2026"})
+                    f/campaign-message (fn [_ _ _ _] "blurb")]
+        (is (= :attach
+               (get-in (f/plan-sponsors {:client nil :podcast "p" :episode-guid "g"
+                                         :campaign-titles {"Hostinger" "Hostinger 2026"}
+                                         :sponsors [{:name "Hostinger" :url "u" :blurb "blurb"}]})
+                       [:actions 0 :op])))))))
+
+(deftest apply-plan-guards-test
+  (let [plan {:episode-guid "g" :actions [{:sponsor "Incogni" :campaign "Incogni"
+                                           :op :attach :timecode "0s"
+                                           :new-sponsor? true}]}]
+    (testing "commit must echo the episode guid"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"commit"
+                            (f/apply-plan! {:client nil :podcast "p" :plan plan
+                                            :sponsors [] :commit? "other"}))))
+    (testing "creating a sponsor requires allow-create?"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"allow-create"
+                            (f/apply-plan! {:client nil :podcast "p" :plan plan
+                                            :sponsors [] :commit? "g"}))))))
+
+(deftest apply-plan-commit-then-throw-test
+  ;; A POST that commits and then throws must not look like a failure: a
+  ;; retry would duplicate the row.
+  (let [present (atom #{})
+        plan {:episode-guid "g" :actions [{:sponsor "Incogni" :campaign "Incogni"
+                                           :op :attach :timecode "0s"
+                                           :new-sponsor? false}]}]
+    (with-redefs [f/acquire-episode-lock! (fn [_] :lock)
+                  f/release-episode-lock! (fn [_] nil)
+                  f/read-sponsorships (fn [_ _ _]
+                                        {:rows (mapv (fn [[s c]] {:sponsor s :campaign c :guid "row-guid"})
+                                                     @present)
+                                         :rendered (count @present)})
+                  f/sponsor-guid-by-title (fn [_] "sid")
+                  f/campaigns-by-sponsor (fn [_ _ _] {"cid" "Incogni"})
+                  f/campaign-message (fn [_ _ _ _] "b")
+                  f/add-sponsorship (fn [_] (swap! present conj ["Incogni" "Incogni"])
+                                      (throw (ex-info "status: 500" {})))]
+      (let [r (f/apply-plan! {:client nil :podcast "p" :plan plan
+                              :sponsors [{:name "Incogni" :url "u" :blurb "b"}]
+                              :commit? "g"})]
+        (is (= 1 (count @present)))
+        (is (= [{:sponsor "Incogni" :campaign "Incogni" :guid "row-guid"}]
+               (:attached r)))))))
+
 (deftest sync-episode-sponsors-test
-  (testing "new sponsor: created, attached, message left alone"
-    (let [attached (atom []) onboarded (atom []) messaged (atom [])
-          present (atom #{})]
-      (with-redefs [f/fetch-sponsorship-ids (fn [_ _ _] (map (fn [n] {:sponsor n}) @present))
-                    f/sponsor-guid-by-title (fn [_] nil)
-                    f/onboard-sponsor! (fn [m] (swap! onboarded conj (:title m))
-                                         {:sponsor-guid "sid-1"})
-                    f/campaigns-by-sponsor (fn [_ _ _] {"cid-1" "Incogni"})
-                    f/campaign-message (fn [_ _ _ _] "same copy")
-                    f/set-campaign-message! (fn [m] (swap! messaged conj m) true)
-                    f/add-sponsorship (fn [m] (swap! attached conj m)
-                                        (swap! present conj (:sponsor m))
-                                        {:ok true})]
-        (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
-                                           :sponsors [{:name "Incogni" :url "u"
-                                                       :blurb "same copy" :code "UNPLUGGED"}]
-                                           :timecodes {"Incogni" "21m 24s"}})]
-          (is (= ["Incogni"] @onboarded))
-          (is (= ["Incogni"] (mapv :sponsor @attached)))
-          (is (= "21m 24s" (:timecode (first @attached))))
-          (is (= "cid-1" (:campaign-id (first @attached))))
-          (is (empty? @messaged) "message already matches, so no patch")
-          (is (= ["Incogni"] (:created r)))
-          (is (= ["Incogni"] (:attached r)))
-          (is (true? (:verified r)))))))
-
-  (testing "existing sponsor with stale copy: messaged, not re-created"
-    (let [attached (atom []) messaged (atom []) present (atom #{"Namecheap"})]
-      (with-redefs [f/fetch-sponsorship-ids (fn [_ _ _] (map (fn [n] {:sponsor n}) @present))
-                    f/sponsor-guid-by-title (fn [_] "sid-2")
-                    f/onboard-sponsor! (fn [_] (throw (ex-info "should not onboard" {})))
-                    f/campaigns-by-sponsor (fn [_ _ _] {"cid-2" "Namecheap"})
-                    f/campaign-message (fn [_ _ _ _] "old copy")
-                    f/set-campaign-message! (fn [m] (swap! messaged conj (:message m)) true)
-                    f/add-sponsorship (fn [m] (swap! attached conj (:sponsor m)) {:ok true})]
-        (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
-                                           :sponsors [{:name "Namecheap" :url "u"
-                                                       :blurb "new copy" :code "UNPLUGGED"}]})]
-          (is (= ["new copy"] @messaged))
-          (is (empty? @attached) "already attached, so no duplicate")
-          (is (= [] (:created r)))
-          (is (= ["Namecheap"] (:present r)))
-          (is (true? (:verified r)))))))
-
-  (testing "a sponsor missing after the run throws"
-    (with-redefs [f/fetch-sponsorship-ids (fn [_ _ _] [])
-                  f/sponsor-guid-by-title (fn [_] "sid-3")
-                  f/campaigns-by-sponsor (fn [_ _ _] {"cid-3" "Nebula"})
-                  f/campaign-message (fn [_ _ _ _] "copy")
-                  f/add-sponsorship (fn [_] {:ok true})] ; does not actually attach
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing after sync"
-                            (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
-                                                       :sponsors [{:name "Nebula" :url "u"
-                                                                   :blurb "copy" :code nil}]})))))
-
-  (testing "an empty sponsor block is refused"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No sponsors to sync"
-                          (f/sync-episode-sponsors! {:client nil :podcast "p"
-                                                     :episode-guid "g" :sponsors []})))))
+  (let [rows (fn [pairs] (mapv (fn [[s c]] {:sponsor s :campaign c}) pairs))]
+    (testing "new sponsor: created and attached when creation is allowed"
+      (let [attached (atom []) onboarded (atom []) present (atom #{})]
+        (with-redefs [f/acquire-episode-lock! (fn [_] :lock)
+                      f/release-episode-lock! (fn [_] nil)
+                      f/read-sponsorships (fn [_ _ _]
+                                            {:rows (rows @present) :rendered (count @present)})
+                      f/sponsor-guid-by-title (fn [_] nil)
+                      f/onboard-sponsor! (fn [m] (swap! onboarded conj (:title m))
+                                           {:sponsor-guid "sid-1"})
+                      f/campaigns-by-sponsor (fn [_ _ _] {"cid-1" "Incogni"})
+                      f/campaign-message (fn [_ _ _ _] "same copy")
+                      f/add-sponsorship (fn [m] (swap! attached conj m)
+                                          (swap! present conj ["Incogni" "Incogni"])
+                                          {:ok true})]
+          (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
+                                             :sponsors [{:name "Incogni" :url "u"
+                                                         :blurb "same copy" :code "UNPLUGGED"}]
+                                             :timecodes {"Incogni" "21m 24s"}
+                                             :allow-create? true})]
+            (is (= ["Incogni"] @onboarded))
+            (is (= "21m 24s" (:timecode (first @attached))))
+            (is (= "cid-1" (:campaign-id (first @attached))))
+            (is (= [{:sponsor "Incogni" :sponsor-id "sid-1"}] (:created r)))
+            (is (true? (:verified r)))))))
+    (testing "already attached on the right campaign is a no-op"
+      (let [writes (atom [])]
+        (with-redefs [f/acquire-episode-lock! (fn [_] :lock)
+                      f/release-episode-lock! (fn [_] nil)
+                      f/read-sponsorships (fn [_ _ _] {:rows (rows [["Namecheap" "Namecheap"]])
+                                                       :rendered 1})
+                      f/sponsor-guid-by-title (fn [_] "sid")
+                      f/campaigns-by-sponsor (fn [_ _ _] {"cid" "Namecheap"})
+                      f/campaign-message (fn [_ _ _ _] "copy")
+                      f/add-sponsorship (fn [_] (swap! writes conj :attach))
+                      f/set-campaign-message! (fn [_] (swap! writes conj :message))]
+          (let [r (f/sync-episode-sponsors! {:client nil :podcast "p" :episode-guid "g"
+                                             :sponsors [{:name "Namecheap" :url "u" :blurb "copy"}]})]
+            (is (empty? @writes))
+            (is (= ["Namecheap"] (:noop r)))
+            (is (true? (:verified r)))))))
+    (testing "an empty sponsor block is refused"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No sponsors to plan"
+                            (f/sync-episode-sponsors! {:client nil :podcast "p"
+                                                       :episode-guid "g" :sponsors []}))))))
 
 (deftest set-campaign-message-test
   ;; The campaign edit form is a _method=patch POST: every field must be

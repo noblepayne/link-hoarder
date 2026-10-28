@@ -55,6 +55,12 @@ complete record. Start there, not in /tmp.
    propagate — never read `:url` alone.
 7. Episode lock: `/tmp/opencode/episode-<guid>.lock` (gone after reboot).
 8. Drafts can carry wrong hosts — check participants before publishing.
+9a. Sponsor writes go through plan-sponsors -> apply-plan! (or the
+   sync-episode-sponsors! wrapper). `read-sponsorships` refuses to report zero
+   unless it positively saw the page (new-sponsorship link + rendered==parsed),
+   because zero rows would otherwise authorize re-attaching everything. A
+   commit-then-throw counts as success on re-read, so retries cannot duplicate.
+   `delete-sponsorship!` rolls back one row by guid.
 9. Fireside `/update_campaigns` broke 2026-10-25 (422 for every sponsor and
    episode, incl. published). Do not use it. Chain now: campaigns come from
    the sponsor's `/campaigns` index (uuids), and the sponsorship POST needs the

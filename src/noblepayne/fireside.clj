@@ -617,28 +617,69 @@
       (throw (ex-info "Failed to set sponsorship timecode"
                       {:status (:status response) :guid sponsorship-guid})))))
 
-(defn fetch-sponsorship-ids
-  "Return [{:guid :sponsor :campaign :timecode-str :timecode-seconds}] for an
-  episode's existing sponsorships, in page order.
+(defn fetch-page!
+  "GET url and return the body. Throws unless we land a 200 on the URL we
+  asked for: Fireside answers an expired session with a redirect to /login
+  served as 200, which a bare status check would accept as success."
+  [client url what]
+  (let [resp (http/request {:method :get :url url :http-client client})
+        uri (str (:uri resp))]
+    (when (re-find #"/login(\?.*)?$" uri)
+      (throw (ex-info (str "Not logged in while reading " what)
+                      {:url url :landed-on uri
+                       :hint "session expired - log in again"})))
+    (when (not= 200 (:status resp))
+      (throw (ex-info (str "Could not read " what)
+                      {:url url :status (:status resp) :landed-on uri})))
+    (:body resp)))
 
-  Sponsorships render as bootstrap accordions rather than table rows, and
-  each accordion carries its own guid, so one pass over the page gets
-  everything without a request per sponsorship."
+(defn read-sponsorships
+  "Read an episode's sponsorships, and prove the page was actually a
+  sponsorships page.
+
+  Returns {:rows [...] :rendered n}. Rows are
+  {:guid :sponsor :campaign :sponsor-id :campaign-id :timecode-str
+   :timecode-seconds} in page order.
+
+  A bare empty vector is not a valid answer on its own: an expired session,
+  a redirect, or a markup change all produce zero rows too, and zero rows
+  authorizes re-attaching everything. So this throws unless the page carries
+  the new-sponsorship affordance AND the number of accordion items rendered
+  equals the number parsed. Zero rows is then positively zero."
   [client podcast episode-guid]
   (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
                            "episodes" episode-guid "sponsorships"])
-        html (:body (http/request {:method :get :url url :http-client client}))]
-    (into []
-          (keep (fn [[_ block]]
-                  (let [[_ guid] (re-find #"id=\"collapse-sponsorship-([0-9a-f-]{36})\""
-                                          block)
-                        sponsorship (first (extract-sponsorships
-                                            (str "<div>" block "</div>")))]
-                    (when (and guid sponsorship)
-                      (assoc sponsorship :guid guid)))))
-          ;; Each accordion-item holds one sponsorship's heading and guid.
-          (re-seq #"(?s)<div class=\"accordion-item\">(.*?)(?=<div class=\"accordion-item\">|</div>\s*</div>\s*</div>)"
-                  html))))
+        html (fetch-page! client url "episode sponsorships")
+        rendered (count (re-seq #"<div class=\"accordion-item\">" html))]
+    (when-not (re-find #"/sponsorships/new" html)
+      (throw (ex-info "Sponsorships page did not look like one (no new-sponsorship link)"
+                      {:url url :rendered rendered})))
+    (let [rows (into []
+                     (keep (fn [[_ block]]
+                             (let [[_ guid] (re-find #"id=\"collapse-sponsorship-([0-9a-f-]{36})\""
+                                                     block)
+                                   sponsorship (first (extract-sponsorships
+                                                       (str "<div>" block "</div>")))
+                                   [_ sid cid] (re-find #"/sponsors/([0-9a-f-]{36})/campaigns/([0-9a-f-]{36})"
+                                                        block)]
+                               (when (and guid sponsorship)
+                                 (assoc sponsorship
+                                        :guid guid
+                                        :sponsor-id sid
+                                        :campaign-id cid)))))
+                     (re-seq #"(?s)<div class=\"accordion-item\">(.*?)(?=<div class=\"accordion-item\">|</div>\s*</div>\s*</div>)"
+                             html))]
+      (when-not (= rendered (count rows))
+        (throw (ex-info "Sponsorships rendered but did not parse"
+                        {:url url :rendered rendered :parsed (count rows)
+                         :hint "markup changed - refusing to infer absence"})))
+      {:rows rows :rendered rendered})))
+
+(defn fetch-sponsorship-ids
+  "Existing sponsorships for an episode, rows only. See read-sponsorships
+  for the witnessed read."
+  [client podcast episode-guid]
+  (:rows (read-sponsorships client podcast episode-guid)))
 
 (defn sync-sponsorship-times
   "Set the timecode of an existing sponsorship from an ads CSV row, matching
@@ -827,22 +868,6 @@
                               :campaign campaign-title :campaign-id cid})))
         {:sponsor title :campaign campaign-title :campaign-id cid
          :sponsor-guid sid :created? true}))))
-
-(defn fetch-page!
-  "GET url and return the body. Throws unless we land a 200 on the URL we
-  asked for: Fireside answers an expired session with a redirect to /login
-  served as 200, which a bare status check would accept as success."
-  [client url what]
-  (let [resp (http/request {:method :get :url url :http-client client})
-        uri (str (:uri resp))]
-    (when (re-find #"/login(\?.*)?$" uri)
-      (throw (ex-info (str "Not logged in while reading " what)
-                      {:url url :landed-on uri
-                       :hint "session expired - log in again"})))
-    (when (not= 200 (:status resp))
-      (throw (ex-info (str "Could not read " what)
-                      {:url url :status (:status resp) :landed-on uri})))
-    (:body resp)))
 
 (defn s3-upload-form
   "Scrape the S3 presigned MP3 upload off the episode edit page. Returns
@@ -1440,85 +1465,245 @@
                         {:campaign campaign-id :expected message :stored stored}))))
     true))
 
-(defn sync-episode-sponsors!
-  "Make an episode's sponsorships match the doc's SPONSORS block.
+(defn episode-lock-file
+  "Path of the mutual-exclusion lock for one episode's audio flow."
+  [episode-guid]
+  (clojure.java.io/file (str "/tmp/opencode/episode-" episode-guid ".lock")))
 
-  `sponsors` is the parsed block: [{:name :url :blurb :code}]. For each one:
-  create the sponsor and its single campaign when the title is new, update the
-  campaign message when it differs, and attach the sponsorship when the
-  episode does not already carry it. Idempotent - re-running is safe.
+(defn acquire-episode-lock!
+  "Claim the episode lock or throw. Two concurrent twice-runs interleave
+  S3 keys, temp urls and polls and verify each other's bytes, so the
+  second run must refuse to start. A stale lock names its age so the
+  operator can remove it by hand (never auto-stolen). Returns the lock
+  file for release-episode-lock!."
+  [episode-guid]
+  (let [f (episode-lock-file episode-guid)]
+    (.mkdirs (.getParentFile ^java.io.File f))
+    (if (.createNewFile ^java.io.File f)
+      (do (spit (.getPath ^java.io.File f)
+                (str "pid=" (.getName (java.lang.management.ManagementFactory/getRuntimeMXBean))
+                     " since=" (java.time.Instant/now) "\n"))
+          f)
+      (let [age-s (quot (- (System/currentTimeMillis) (.lastModified ^java.io.File f)) 1000)]
+        (throw (ex-info "episode audio flow is already running elsewhere; refusing to start"
+                        {:episode-guid episode-guid
+                         :lock (.getPath ^java.io.File f)
+                         :lock-age-seconds age-s
+                         :hint "remove the lock file once no run is active"}))))))
 
-  Options:
-    :timecodes       map of sponsor name -> timecode words, default 0s
-    :campaign-titles map of sponsor name -> campaign title, default the name
+(defn release-episode-lock!
+  "Release a lock claimed by acquire-episode-lock!. Never throws."
+  [lock-file]
+  (try (.delete ^java.io.File lock-file)
+       (catch Exception _ nil))
+  nil)
 
-  :url and :code are applied only when the sponsor is created; editing them
-  on an existing sponsor is still a Fireside UI change. :blurb is reconciled
-  on every run.
+(defn plan-sponsors
+  "Read-only plan for an episode's sponsors. Never writes.
 
-  Returns {:created [...] :messaged [...] :attached [...] :present [...]
-  :verified true}. Throws if any sponsor is missing afterwards, carrying
-  :progress so a partial run is recoverable."
+  Returns {:episode-guid :rendered :actions :unexpected :warnings}.
+
+  Each action is {:sponsor :campaign :op :timecode :new-sponsor?} where op is
+  :noop, :attach, :message or :attach+message, plus :message-from when copy
+  would change. :new-sponsor? is the irreversible one: creating a sponsor
+  record affects every future episode.
+
+  The read is witnessed (read-sponsorships): an unparseable sponsorships page
+  throws instead of looking like an episode with nothing attached."
   [{:keys [client podcast episode-guid sponsors timecodes campaign-titles]}]
   (when (empty? sponsors)
-    (throw (ex-info "No sponsors to sync" {:episode-guid episode-guid})))
-  (let [present (atom (set (map :sponsor (fetch-sponsorship-ids client podcast episode-guid))))
-        result
-        (reduce
-         (fn [acc {:keys [name url blurb code]}]
-           (try
-             (let [ct (get campaign-titles name name)
-                   tc (or (get timecodes name) "0s")
-                   existing (sponsor-guid-by-title {:client client :podcast podcast :title name})
-                   created? (nil? existing)
-                   sid (or existing
-                           (:sponsor-guid
-                            (onboard-sponsor! {:client client :podcast podcast
-                                               :title name :url url
-                                               :campaign-title ct
-                                               :promo-code (or code "")
-                                               :message blurb})))
-                   campaigns (campaigns-by-sponsor client podcast sid)
-                   cid (or (key (first (filter (fn [[_ t]] (= t ct)) campaigns)))
-                           (throw (ex-info "Campaign not found for sponsor"
-                                           {:sponsor name :campaign ct
-                                            :known (vec (vals campaigns))})))
-                   stored (campaign-message client podcast sid cid)
-                   messaged? (not= (str/trim (str stored)) (str/trim (str blurb)))
-                   already? (contains? @present name)]
-               (when messaged?
-                 (set-campaign-message! {:client client :podcast podcast
-                                         :sponsor-id sid :campaign-id cid
-                                         :message blurb}))
-               (when-not already?
-                 (add-sponsorship {:client client :podcast podcast
-                                   :episode-guid episode-guid
-                                   :sponsor name :campaign ct :campaign-id cid
-                                   :timecode tc})
-                 (swap! present conj name))
-               (cond-> acc
-                 created? (update :created conj name)
-                 messaged? (update :messaged conj name)
-                 already? (update :present conj name)
-                 (not already?) (update :attached conj name)))
-             (catch clojure.lang.ExceptionInfo e
-               ;; A mid-run failure leaves earlier sponsors already written.
-               ;; Carry what happened so the operator can tell whether to re-run.
-               (throw (ex-info (ex-message e)
-                               (merge (ex-data e)
-                                      {:sponsor name
-                                       :episode-guid episode-guid
-                                       :progress (select-keys acc [:created :messaged
-                                                                   :attached :present])}))))))
-         {:created [] :messaged [] :attached [] :present []}
+    (throw (ex-info "No sponsors to plan" {:episode-guid episode-guid})))
+  (let [{:keys [rows rendered]} (read-sponsorships client podcast episode-guid)
+        present (set (map (juxt :sponsor :campaign) rows))
+        doc-names (set (map :name sponsors))
+        actions
+        (mapv
+         (fn [{:keys [name blurb]}]
+           (let [sid (sponsor-guid-by-title {:client client :podcast podcast :title name})
+                 new? (nil? sid)
+                 campaigns (when sid (campaigns-by-sponsor client podcast sid))
+                 ;; With one campaign, that is the campaign - same rule
+                 ;; add-sponsorship uses. Otherwise the caller must map the
+                 ;; name, because guessing is how the wrong campaign ships.
+                 campaign (or (get campaign-titles name)
+                              (when (= 1 (count campaigns)) (first (vals campaigns)))
+                              name)
+                 timecode (or (get timecodes name) "0s")
+                 cid (when campaigns
+                       (some (fn [[id title]] (when (= title campaign) id)) campaigns))
+                 _ (when (and sid (not cid))
+                     (throw (ex-info "Campaign not found for sponsor"
+                                     {:sponsor name :campaign campaign
+                                      :known (vec (vals campaigns))})))
+                 stored (when cid (campaign-message client podcast sid cid))
+                 message? (and cid (not= (str/trim (str stored))
+                                         (str/trim (str blurb))))
+                 attach? (not (contains? present [name campaign]))]
+             {:sponsor name
+              :campaign campaign
+              :op (cond (and attach? message?) :attach+message
+                        attach? :attach
+                        message? :message
+                        :else :noop)
+              :timecode timecode
+              :new-sponsor? new?
+              :message-from (when message? stored)}))
          sponsors)
-        ;; Verify by re-reading the episode, not by trusting the atom.
-        after-names (set (map :sponsor (fetch-sponsorship-ids client podcast episode-guid)))
-        missing (remove #(contains? after-names %) (map :name sponsors))]
+        unexpected (->> rows (map :sponsor) (remove doc-names) distinct vec)
+        warnings (cond-> []
+                   (seq (filter :new-sponsor? actions))
+                   (conj "plan would CREATE new sponsor records")
+                   (seq unexpected)
+                   (conj "episode carries sponsors that are not in the doc"))]
+    {:episode-guid episode-guid
+     :rendered rendered
+     :actions actions
+     :unexpected unexpected
+     :warnings warnings}))
+
+(defn- attach-sponsorship!
+  "add-sponsorship, but treat a POST that committed and then threw as
+  success when a re-read shows the row. Retrying a non-idempotent create is
+  how duplicates happen."
+  [{:keys [client podcast episode-guid sponsor campaign campaign-id timecode]}]
+  (try
+    (add-sponsorship {:client client :podcast podcast :episode-guid episode-guid
+                      :sponsor sponsor :campaign campaign
+                      :campaign-id campaign-id :timecode timecode})
+    (catch clojure.lang.ExceptionInfo e
+      (if (some #(and (= sponsor (:sponsor %)) (= campaign (:campaign %)))
+                (:rows (read-sponsorships client podcast episode-guid)))
+        :recovered
+        (throw e)))))
+
+(defn apply-plan!
+  "Execute a plan from plan-sponsors.
+
+  :commit? must equal the plan's :episode-guid - that catches planning 691
+  and applying to 690. Creating a sponsor record requires :allow-create?
+  true; :sponsors is the parsed doc block, used when creating.
+
+  Takes the episode lock, re-reads after writes, and returns a receipt with
+  uuids. On failure it throws with :progress so a partial run is recoverable."
+  [{:keys [client podcast plan sponsors commit? allow-create?]}]
+  (when-not (= (str commit?) (str (:episode-guid plan)))
+    (throw (ex-info "Refusing to apply: :commit? must equal the plan's :episode-guid"
+                    {:commit? commit? :episode-guid (:episode-guid plan)})))
+  (let [new-actions (filterv :new-sponsor? (:actions plan))]
+    (when (and (seq new-actions) (not allow-create?))
+      (throw (ex-info "Plan would create new sponsor records; pass :allow-create? true"
+                      {:new (mapv :sponsor new-actions)}))))
+  (let [episode-guid (:episode-guid plan)
+        by-name (into {} (map (juxt :name identity)) sponsors)
+        lock (acquire-episode-lock! episode-guid)
+        receipt
+        (try
+          (reduce
+           (fn [acc {:keys [sponsor campaign op timecode new-sponsor?]}]
+             (try
+               (if (= op :noop)
+                 (update acc :noop conj sponsor)
+                 (let [{:keys [name url blurb code]} (get by-name sponsor)
+                       sid (or (sponsor-guid-by-title {:client client :podcast podcast
+                                                       :title name})
+                               (:sponsor-guid
+                                (onboard-sponsor! {:client client :podcast podcast
+                                                   :title name :url url
+                                                   :campaign-title campaign
+                                                   :promo-code (or code "")
+                                                   :message blurb})))
+                       campaigns (campaigns-by-sponsor client podcast sid)
+                       ;; The plan already resolved campaign; follow it exactly.
+                       campaign (or campaign
+                                    (when (= 1 (count campaigns)) (first (vals campaigns)))
+                                    name)
+                       cid (or (some (fn [[id title]] (when (= title campaign) id)) campaigns)
+                               (throw (ex-info "Campaign not found for sponsor"
+                                               {:sponsor name :campaign campaign
+                                                :known (vec (vals campaigns))})))
+                       changed? (contains? #{:message :attach+message} op)
+                       attached? (contains? #{:attach :attach+message} op)
+                       from (when changed? (campaign-message client podcast sid cid))]
+                   (when changed?
+                     (set-campaign-message! {:client client :podcast podcast
+                                             :sponsor-id sid :campaign-id cid
+                                             :message blurb}))
+                   (when attached?
+                     (attach-sponsorship! {:client client :podcast podcast
+                                           :episode-guid episode-guid
+                                           :sponsor name :campaign campaign
+                                           :campaign-id cid :timecode timecode}))
+                   (cond-> acc
+                     (and new-sponsor? sid) (update :created conj
+                                                    {:sponsor name :sponsor-id sid})
+                     changed? (update :messaged conj
+                                      {:sponsor name :from from :to blurb})
+                     attached? (update :attached conj
+                                       {:sponsor name :campaign campaign}))))
+               (catch clojure.lang.ExceptionInfo e
+                 (throw (ex-info (ex-message e)
+                                 (merge (ex-data e)
+                                        {:sponsor sponsor
+                                         :progress (select-keys acc
+                                                                [:created :messaged
+                                                                 :attached :noop])}))))))
+           {:created [] :messaged [] :attached [] :noop []}
+           (:actions plan))
+          (finally (release-episode-lock! lock)))
+        ;; Verify by identity, and give every attached row its guid.
+        rows (:rows (read-sponsorships client podcast episode-guid))
+        find-row (fn [{:keys [sponsor campaign]}]
+                   (first (filter #(and (= sponsor (:sponsor %))
+                                        (= campaign (:campaign %)))
+                                  rows)))
+        attached (mapv (fn [a] (assoc a :guid (:guid (find-row a))))
+                       (:attached receipt))
+        missing (remove find-row (:attached receipt))]
     (when (seq missing)
-      (throw (ex-info "Sponsors missing after sync"
-                      {:episode-guid episode-guid :missing (vec missing)})))
-    (assoc result :verified true)))
+      (throw (ex-info "Sponsorships missing after apply"
+                      {:episode-guid episode-guid
+                       :missing (mapv (juxt :sponsor :campaign) missing)
+                       :progress receipt})))
+    (assoc receipt :attached attached :verified true)))
+
+(defn sync-episode-sponsors!
+  "Plan and apply in one call. Same options as plan-sponsors, plus
+  :allow-create? to permit creating new sponsor records.
+
+  Use plan-sponsors first when anything looks unusual - this is the
+  one-call path for the weekly run."
+  [{:keys [client podcast episode-guid sponsors timecodes campaign-titles allow-create?]}]
+  (let [plan (plan-sponsors {:client client :podcast podcast :episode-guid episode-guid
+                             :sponsors sponsors :timecodes timecodes
+                             :campaign-titles campaign-titles})]
+    (apply-plan! {:client client :podcast podcast :plan plan :sponsors sponsors
+                  :commit? episode-guid :allow-create? allow-create?})))
+
+(defn delete-sponsorship!
+  "Delete one sponsorship by guid and confirm it is gone.
+
+  The sponsorships page renders its own delete affordance (data-method
+  delete), so this replays that form rather than inventing a route. Used for
+  rollback when an attach duplicated."
+  [{:keys [client podcast episode-guid sponsorship-guid]}]
+  (let [url (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                           "episodes" episode-guid "sponsorships"])
+        html (fetch-page! client url "episode sponsorships")
+        token (second (re-find #"name=\"csrf-token\" content=\"([^\"]+)\"" html))]
+    (when-not token
+      (throw (ex-info "No CSRF token on the sponsorships page" {:url url})))
+    (let [resp (http/post (str url "/" sponsorship-guid)
+                          {:http-client client :throw-exceptions false
+                           :form-params {"authenticity_token" token
+                                         "_method" "delete"}})]
+      (when-not (<= 200 (:status resp) 399)
+        (throw (ex-info "Failed to delete sponsorship"
+                        {:status (:status resp) :guid sponsorship-guid}))))
+    (let [rows (:rows (read-sponsorships client podcast episode-guid))]
+      (when (some #(= sponsorship-guid (:guid %)) rows)
+        (throw (ex-info "Sponsorship still present after delete"
+                        {:guid sponsorship-guid})))
+      true)))
 
 (defn set-participants!
   "Set host/guest checkboxes without touching anything else. host-ids
@@ -1672,39 +1857,6 @@
                     :previous-url known-url})
       (println "Waiting for processing...")
       (await-processed args))))
-
-(defn episode-lock-file
-  "Path of the mutual-exclusion lock for one episode's audio flow."
-  [episode-guid]
-  (clojure.java.io/file (str "/tmp/opencode/episode-" episode-guid ".lock")))
-
-(defn acquire-episode-lock!
-  "Claim the episode lock or throw. Two concurrent twice-runs interleave
-  S3 keys, temp urls and polls and verify each other's bytes, so the
-  second run must refuse to start. A stale lock names its age so the
-  operator can remove it by hand (never auto-stolen). Returns the lock
-  file for release-episode-lock!."
-  [episode-guid]
-  (let [f (episode-lock-file episode-guid)]
-    (.mkdirs (.getParentFile ^java.io.File f))
-    (if (.createNewFile ^java.io.File f)
-      (do (spit (.getPath ^java.io.File f)
-                (str "pid=" (.getName (java.lang.management.ManagementFactory/getRuntimeMXBean))
-                     " since=" (java.time.Instant/now) "\n"))
-          f)
-      (let [age-s (quot (- (System/currentTimeMillis) (.lastModified ^java.io.File f)) 1000)]
-        (throw (ex-info "episode audio flow is already running elsewhere; refusing to start"
-                        {:episode-guid episode-guid
-                         :lock (.getPath ^java.io.File f)
-                         :lock-age-seconds age-s
-                         :hint "remove the lock file once no run is active"}))))))
-
-(defn release-episode-lock!
-  "Release a lock claimed by acquire-episode-lock!. Never throws."
-  [lock-file]
-  (try (.delete ^java.io.File lock-file)
-       (catch Exception _ nil))
-  nil)
 
 (defn current-temp-url
   "Read the episode's staged mp3_upload_url, or nil when unset. Used to

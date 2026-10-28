@@ -208,30 +208,56 @@ shipped without it until caught on the public page).
 ### 5b. Doc-driven sponsors (preferred since 2026-10-28)
 
 The show-notes doc carries a `#### SPONSORS` block. The scrape returns
-`(:sponsors data)` as `[{:name :url :blurb :code}]`, and one call reconciles
-everything — creates any missing sponsor and its single campaign, updates the
-campaign message when the copy differs, and attaches what the episode is
-missing. Main feed only:
+`(:sponsors data)` as `[{:name :url :blurb :code}]`.
+
+Plan first — this never writes, and it refuses to guess if the sponsorships
+page did not parse:
 
 ```clojure
-(fs/sync-episode-sponsors! {:client c :podcast "linuxunplugged"
-                            :episode-guid (:guid data)
-                            :sponsors (:sponsors data)
-                            :timecodes {"Incogni" "21m 24s"
-                                        "Namecheap" "39m 16s"}})
-;; => {:created [...] :messaged [...] :attached [...] :present [...] :verified true}
+(def plan (fs/plan-sponsors {:client c :podcast "linuxunplugged"
+                             :episode-guid (:guid data)
+                             :sponsors (:sponsors data)
+                             :timecodes {"Incogni" "21m 24s"
+                                         "Namecheap" "39m 16s"}}))
+;; => {:episode-guid "..." :rendered 3
+;;     :actions [{:sponsor "Nebula" :campaign "Managed Nebula" :op :noop ...} ...]
+;;     :unexpected [] :warnings []}
 ```
 
-It is idempotent: already-attached sponsors come back in `:present` and are
-not re-posted. `:url` and `:code` apply only at creation; `:blurb` is
-reconciled on every run. A failure mid-run throws with `:progress` so you can
-see what already landed.
+Read it before applying. `:op` is `:noop`, `:attach`, `:message` or
+`:attach+message`; `:new-sponsor?` means the plan would CREATE a sponsor
+record (irreversible, affects every future episode). `:unexpected` names
+sponsors on the episode that are not in the doc.
 
-Check the parsed block before running it:
+Apply with the episode guid echoed back — a mistyped commit is refused:
 
 ```clojure
-(:sponsors data)   ; names must match Fireside sponsor titles exactly
+(fs/apply-plan! {:client c :podcast "linuxunplugged" :plan plan
+                 :sponsors (:sponsors data)
+                 :commit? (:guid data)
+                 :allow-create? true})   ; only when :new-sponsor? appears
+;; => {:created [{:sponsor :sponsor-id}] :messaged [{:sponsor :from :to}]
+;;     :attached [{:sponsor :campaign :guid}] :noop [...] :verified true}
 ```
+
+`sync-episode-sponsors!` is plan+apply in one call, same options, for when the
+plan is boring.
+
+Safety properties worth knowing:
+
+- `read-sponsorships` refuses to report zero unless it positively saw the
+  page (new-sponsorship link present, and accordion items rendered == parsed).
+  An expired session or markup change throws instead of looking empty — that
+  is the guard against re-attaching everything.
+- `apply-plan!` takes the episode lock and re-reads after writes. A POST that
+  committed and then threw counts as success, so a retry cannot duplicate.
+- Attach is keyed on (sponsor, campaign): a campaign change plans an
+  `:attach`, not a silent no-op.
+- Rollback: `(fs/delete-sponsorship! {:client c :podcast "linuxunplugged"
+  :episode-guid g :sponsorship-guid guid})` removes one row and verifies it is
+  gone. Use the guid from `:attached` / `fetch-sponsorship-ids`. A duplicate
+  *sponsor record* is still a manual Fireside fix — the readback gives you
+  `:sponsor-id` so you can tell them apart.
 
 New sponsor onboarding (proven twice: Connecten on 687, Hostinger on 688)
 is one call — decide the five values from the transcript read + the doc,
