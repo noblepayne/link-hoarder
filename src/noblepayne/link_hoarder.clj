@@ -58,9 +58,21 @@
       ;; extract blockquote text, which is embedded in a `p`.
       (inner-content possible-quote))))
 
+(defn unescape-markdown
+  "Drop markdown backslash escapes from text: a title written with escaped
+  brackets around security publishes as [security], not with backslashes.
+
+  Markdown uses a backslash to escape punctuation; the parser keeps it in the
+  text node, so the escape would reach the feed. Only punctuation is
+  unescaped, so a literal backslash before a word is left alone."
+  [s]
+  (if (string? s)
+    (str/replace s #"\\([^\w\s])" "$1")
+    s))
+
 (defn extract-link-data [link-node]
   {:href (-> link-node :attrs :href)
-   :title (inner-content link-node)})
+   :title (unescape-markdown (inner-content link-node))})
 
 ;; TODO: how to handle multiple? use first?
 ;; TODO: more distinct signal? Links could be reused.
@@ -155,7 +167,7 @@
           (find-links md-zip opts)))))
 
 (defn extract-guest-data [link-node]
-  {:name (inner-content link-node)
+  {:name (unescape-markdown (inner-content link-node))
    :href (-> link-node :attrs :href)
    :img (-> link-node :attrs :title)
    :role "guest"
@@ -566,6 +578,19 @@
      (spit path (preview-markdown data format))
      (str "file://" path))))
 
+(defn- escape-html
+  "Minimal HTML text escaping for the preview title. The ampersand goes first."
+  [s]
+  (-> (str s)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")))
+
+(defn- preview-page-title [data]
+  (let [{:keys [show episode title]} data]
+    (escape-html (str/join " " (remove str/blank? [show episode (str "— " title)])))))
+
 (defn preview-rendered
   "Generate mobile-friendly feed-style preview (Hiccup -> HTML)."
   [data]
@@ -614,6 +639,7 @@
                      (when (:quote l)
                        [:div {:class "link-quote"} (:quote l)])])]]]]
     (str "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+         "<title>" (preview-page-title data) "</title>"
          "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
          "<link rel=\"stylesheet\" href=\"https://unpkg.com/@picocss/pico@2/css/pico.min.css\">"
          "<script>document.documentElement.classList.add('dark')</script>"
