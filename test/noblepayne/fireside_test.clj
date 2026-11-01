@@ -455,6 +455,29 @@
         (is (= [{:sponsor "Incogni" :campaign "Incogni" :guid "row-guid"}]
                (:attached r)))))))
 
+(deftest create-campaign-test
+  ;; Copy is campaign-level, so per-episode copy needs its own campaign under
+  ;; the existing sponsor.
+  (let [posted (atom nil)
+        page {:tag :root
+              :content [{:tag :form
+                         :attrs {:action "/podcasts/p/sponsors/sid/campaigns"}
+                         :content [{:tag :input
+                                    :attrs {:type "hidden"
+                                            :name "authenticity_token" :value "T"}}]}]}]
+    (with-redefs [f/cookies-for (fn [_ _] "c=v")
+                  f/fetch-as-hickory (fn [_] page)
+                  f/campaigns-by-sponsor (fn [_ _ _] {"cid-9" "Hostinger Black Friday"})
+                  http/post (fn [_ opts] (reset! posted (:form-params opts))
+                              {:status 302 :headers {"location" "https://x/campaigns/cid-9"}})]
+      (let [r (f/create-campaign! {:client nil :podcast "p" :sponsor-id "sid"
+                                   :title "Hostinger Black Friday" :url "https://h.test"
+                                   :promo-code "UNPLUGGED" :message "bf copy"})]
+        (is (= {:sponsor-id "sid" :campaign-id "cid-9" :campaign "Hostinger Black Friday"} r))
+        (is (= "Hostinger Black Friday" (get @posted "campaign[title]")))
+        (is (= "bf copy" (get @posted "campaign[message]")))
+        (is (= "UNPLUGGED" (get @posted "campaign[promo_code]")))))))
+
 (deftest sync-episode-sponsors-test
   (let [rows (fn [pairs] (mapv (fn [[s c]] {:sponsor s :campaign c}) pairs))]
     (testing "new sponsor: created and attached when creation is allowed"

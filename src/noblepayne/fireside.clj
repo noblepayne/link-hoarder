@@ -772,6 +772,33 @@
   (some (fn [[k v]] (when (= "location" (clojure.string/lower-case (str k))) (str v)))
         (:headers resp)))
 
+(defn- form-poster
+  "Return a fn that POSTs urlencoded to Fireside with the session cookie,
+  never following redirects.
+
+  Rails re-renders the form with a 200 on validation failure, so success is a
+  302/303 carrying a Location - not any 2xx. Returns the Location."
+  [client what]
+  (let [nc (http/build-http-client {:connect-timeout 30000
+                                    :redirect-policy :never
+                                    :cookie-policy :none})
+        cookies (cookies-for client FIRESIDE-BASE-URL)
+        std-headers {"Origin" FIRESIDE-BASE-URL
+                     "User-Agent" "Mozilla/5.0 Chrome/152"
+                     "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                     "Cookie" cookies}]
+    (fn [url referer form-params]
+      (let [resp (http/post url {:http-client nc
+                                 :throw-exceptions false
+                                 :headers (assoc std-headers "Referer" referer)
+                                 :form-params form-params})
+            loc (redirect-location resp)]
+        (when-not (and (contains? #{302 303} (:status resp)) loc)
+          (throw (ex-info (str what " failed")
+                          {:url url :status (:status resp) :location loc
+                           :body (subs (str (:body resp)) 0 (min 300 (count (str (:body resp)))))})))
+        loc))))
+
 (defn onboard-sponsor!
   "Create a brand-new sponsor plus its first (and only) campaign, then
   verify both read back. Takes the five decided values — title must
@@ -800,26 +827,7 @@
                              campaign (assoc :campaign campaign)
                              campaign-id (assoc :campaign-id campaign-id))))
         {:sponsor title :sponsor-guid existing :created? false})
-    (let [nc (http/build-http-client {:connect-timeout 30000 :redirect-policy :never
-                                      :cookie-policy :none})
-          cookies (cookies-for client FIRESIDE-BASE-URL)
-          std-headers {"Origin" FIRESIDE-BASE-URL
-                       "User-Agent" "Mozilla/5.0 Chrome/152"
-                       "Accept" "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                       "Cookie" cookies}
-          post! (fn [url referer form-params]
-                  (let [resp (http/post url {:http-client nc :throw-exceptions false
-                                             :headers (assoc std-headers "Referer" referer)
-                                             :form-params form-params})
-                        loc (redirect-location resp)]
-                    ;; Rails re-renders the form with a 200 on validation
-                    ;; failure, which is not success no matter the 2xx.
-                    (when-not (and (contains? #{302 303} (:status resp)) loc)
-                      (throw (ex-info "Sponsor onboarding POST failed"
-                                      {:url url :status (:status resp)
-                                       :location loc
-                                       :body (subs (str (:body resp)) 0 (min 300 (count (str (:body resp)))))})))
-                    loc))
+    (let [post! (form-poster client "Sponsor onboarding")
           ;; 1. sponsor. Forms accept urlencoded (multipart 500s here too).
           new-page (fetch-as-hickory {:http-client client
                                       :url (str FIRESIDE-BASE-URL "/podcasts/" podcast "/sponsors/new")})
@@ -1497,6 +1505,43 @@
   (try (.delete ^java.io.File lock-file)
        (catch Exception _ nil))
   nil)
+
+(defn create-campaign!
+  "Create an additional campaign under an existing sponsor.
+
+  Sponsor copy is campaign-level - a sponsorship row has no message of its
+  own - so copy meant for one episode, without rewriting the sponsor's shared
+  campaign, needs its own campaign. Attach it by mapping the doc name to this
+  campaign title, and the plan will target it.
+
+  Returns {:sponsor-id :campaign-id :campaign}."
+  [{:keys [client podcast sponsor-id title url promo-code message]}]
+  (when (str/blank? title)
+    (throw (ex-info "Campaign title must not be blank" {})))
+  (when (str/blank? message)
+    (throw (ex-info "Campaign message must not be blank" {:campaign title})))
+  (let [post! (form-poster client "Campaign creation")
+        base (str/join "/" [FIRESIDE-BASE-URL "podcasts" podcast
+                            "sponsors" sponsor-id "campaigns"])
+        page (fetch-as-hickory {:http-client client :url (str base "/new")})
+        form (or (first (filter #(re-find #"campaigns" (str (get-in % [:attrs :action])))
+                                (hs/select (hs/tag :form) page)))
+                 (throw (ex-info "Campaign creation form not found"
+                                 {:sponsor-id sponsor-id})))
+        inputs (into {} (map (comp (juxt :name :value) :attrs))
+                     (concat (hs/select (hs/tag :input) form)
+                             (hs/select (hs/tag :textarea) form)))]
+    (post! base (str base "/new")
+           (assoc inputs
+                  "campaign[title]" title "campaign[url]" url
+                  "campaign[promo_code]" (or promo-code "")
+                  "campaign[message]" message "campaign[script]" ""
+                  "commit" "Create Campaign"))
+    (let [cid (or (some (fn [[id t]] (when (= t title) id))
+                        (campaigns-by-sponsor client podcast sponsor-id))
+                  (throw (ex-info "Campaign not found after create"
+                                  {:sponsor-id sponsor-id :campaign title})))]
+      {:sponsor-id sponsor-id :campaign-id cid :campaign title})))
 
 (defn plan-sponsors
   "Read-only plan for an episode's sponsors. Never writes.

@@ -243,6 +243,20 @@ Apply with the episode guid echoed back — a mistyped commit is refused:
 `sync-episode-sponsors!` is plan+apply in one call, same options, for when the
 plan is boring.
 
+**Per-episode copy that must not be shared.** Sponsor copy is campaign-level
+(a sponsorship row has no message of its own). If the doc carries copy that
+should apply to this episode only, give it its own campaign and map it, or the
+plan's `:message` op will rewrite the sponsor's shared campaign — and every
+past episode using it:
+
+```clojure
+(fs/create-campaign! {:client c :podcast "linuxunplugged"
+                      :sponsor-id "736e7e47-66ec-4ca1-b25e-d1873983129e"
+                      :title "Hostinger Black Friday" :url "https://hostinger.com/UNPLUGGED"
+                      :promo-code "UNPLUGGED" :message "<episode-only copy>"})
+;; then plan/apply with :campaign-titles {"Hostinger" "Hostinger Black Friday"}
+```
+
 Safety properties worth knowing:
 
 - `read-sponsorships` refuses to report zero unless it positively saw the
