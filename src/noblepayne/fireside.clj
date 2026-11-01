@@ -2075,10 +2075,14 @@
 
 (defn prepare-data
   "Fetch markdown from url and prepare data with podcast association.
-  Returns data map with :podcast set."
-  [url podcast]
-  (-> (lh/-main url)
-      (assoc :podcast podcast)))
+  Returns data map with :podcast set.
+
+  Options are passed through to the scraper: :scope :show (default) publishes
+  links below ### Show Links; :scope :all is the members variant."
+  ([url podcast] (prepare-data url podcast {}))
+  ([url podcast opts]
+   (-> (lh/-main url opts)
+       (assoc :podcast podcast))))
 
 (defn- unreverse-tags
   "Reverse tags back to original order for Fireside.

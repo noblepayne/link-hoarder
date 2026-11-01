@@ -369,12 +369,15 @@
           (extract-sponsors mdzip))))
 
 (defn -main
-  "Invoke me with clojure -M -m noblepayne.link-hoarder"
-  [url]
-  (-> url
-      fetch-markdown
-      parse-data-from-markdown
-      #_pprint/pprint))
+  "Invoke me with clojure -M -m noblepayne.link-hoarder
+
+  Options: :scope :show (default) or :all for the members variant."
+  ([url] (-main url {}))
+  ([url opts]
+   (-> url
+       fetch-markdown
+       (parse-data-from-markdown opts)
+       #_pprint/pprint)))
 
 (defn grab-link-data [doc-url]
   (->> doc-url
@@ -575,6 +578,18 @@
                   [:span (str "Episode " episode)]]
                  (when guid [:p {:class "guid"} (str "GUID: " guid)])]
                 [:section {:class "description"} description]
+                (when (seq (:sponsors data))
+                  [:section {:class "sponsors"}
+                   [:h2 (str "Sponsors (" (count (:sponsors data)) ")")]
+                   [:div {:class "sponsor-grid"}
+                    (for [sp (:sponsors data)]
+                      [:div {:class "sponsor-card"}
+                       [:div {:class "sponsor-head"}
+                        [:a {:href (:url sp) :target "_blank" :rel "noopener noreferrer"}
+                         (:name sp)]
+                        (when (:code sp)
+                          [:span {:class "sponsor-code"} (str "code " (:code sp))])]
+                       [:p (:blurb sp)]])]])
                 (when (and tags (not (str/blank? tags)))
                   [:div {:class "tags"}
                    (for [t (str/split tags #",\s*")]
@@ -608,6 +623,12 @@
          ".episode-header { border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 1rem; padding-bottom: 0.5rem; } "
          ".episode-meta span { margin-right: 1rem; color: var(--pico-muted-color); font-size: 0.9rem; } "
          ".guid { font-family: monospace; font-size: 0.75rem; color: var(--pico-muted-color); } "
+         ".sponsors { margin: 1rem 0; } "
+         ".sponsor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem; } "
+         ".sponsor-card { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.75rem; } "
+         ".sponsor-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; font-weight: bold; } "
+         ".sponsor-code { font-family: monospace; font-size: 0.75rem; color: var(--pico-muted-color); } "
+         ".sponsor-card p { margin: 0.4rem 0 0; font-size: 0.9rem; color: var(--pico-muted-color); } "
          ".tags { margin: 1rem 0; } "
          ".tags span { background: var(--pico-muted-background); padding: 2px 8px; border-radius: 4px; margin-right: 6px; font-size: 0.8rem; border: 1px solid var(--pico-muted-border-color); color: var(--pico-color); } "
          ".guest-grid { display: flex; flex-wrap: wrap; gap: 1rem; } "
@@ -621,13 +642,20 @@
          "</main></body></html>")))
 
 (defn save-preview-rendered
-  "Save feed-style HTML preview to /dev/shm/link-hoarder-rendered-{guid}.html."
-  [data]
-  (let [guid (:guid data)
-        filename (if guid (str "link-hoarder-rendered-" guid ".html") "link-hoarder-rendered.html")
-        path (str "/dev/shm/" filename)]
-    (spit path (preview-rendered data))
-    (str "file://" path)))
+  "Save feed-style HTML preview to
+  /dev/shm/link-hoarder-rendered-{guid}[-{suffix}].html.
+
+  Options: :suffix, e.g. \"members\" so the public and members scrapes of the
+  same episode do not overwrite each other."
+  ([data] (save-preview-rendered data {}))
+  ([data {:keys [suffix]}]
+   (let [guid (:guid data)
+         stem (str "link-hoarder-rendered-"
+                   (or guid "episode")
+                   (when suffix (str "-" suffix)))
+         path (str "/dev/shm/" stem ".html")]
+     (spit path (preview-rendered data))
+     (str "file://" path))))
 
 (comment
 
