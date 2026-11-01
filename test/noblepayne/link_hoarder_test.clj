@@ -216,3 +216,29 @@
       (is (empty? (parse (str "#### SPONSORS\n\n- **Acme**  \n  No link here.\n")))))
     (testing "no SPONSORS block yields []"
       (is (empty? (parse "# Just a doc\n\n+ nothing\n"))))))
+
+(deftest link-scope-test
+  ;; `### Show Links` is the public/members line: links above it are
+  ;; members-only material, so the regular feed starts below it. :all is the
+  ;; members/bootleg variant that keeps everything after the sponsors block.
+  (let [md (str "#### SPONSORS\n\n- **[Acme](https://acme.test)**  \n  blurb\n\n"
+                "### [Members only news](https://news.test/story)\n\n"
+                "### Show Links\n\n"
+                "+ [Public link](https://public.test/one)\n")
+        tmp (java.io.File/createTempFile "scope-probe" ".md")]
+    (try
+      (spit tmp md)
+      (let [z (lh/fetch-markdown (.getAbsolutePath tmp))
+            show (set (map :href (lh/extract-links z)))
+            all (set (map :href (lh/extract-links z {:scope :all})))]
+        (testing "default scope stops at Show Links"
+          (is (contains? show "https://public.test/one"))
+          (is (not (contains? show "https://news.test/story")))
+          (is (not (contains? show "https://acme.test")) "sponsors are never show links"))
+        (testing ":all includes above-the-line links"
+          (is (contains? all "https://news.test/story"))
+          (is (contains? all "https://public.test/one"))
+          (is (not (contains? all "https://acme.test")) "still not sponsor links"))
+        (testing ":all is a superset"
+          (is (every? all show))))
+      (finally (.delete tmp)))))

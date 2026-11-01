@@ -64,24 +64,47 @@
 
 ;; TODO: how to handle multiple? use first?
 ;; TODO: more distinct signal? Links could be reused.
+(defn- after-sponsors-loc
+  "Loc just past the SPONSORS block, or nil when there is none."
+  [ziploc]
+  (when-let [heading (hs/select-next-loc (hs/id "sponsors") ziploc)]
+    (when-let [ul (hs/after-subtree heading)]
+      (hs/after-subtree ul))))
+
+(defn- find-links-from [current-ziploc]
+  (let [next-link (hs/select-next-loc
+                   (hs/tag :a)
+                   current-ziploc
+                   zip/next
+                   ;; continue scanning until end or `### End Links`
+                   #(or (zip/end? %)
+                        ((hs/id :end-links) %)))]
+    (when next-link
+      (lazy-seq (cons next-link
+                      (find-links-from (zip/next next-link)))))))
+
 (defn find-links
-  ([initial-ziploc]
-   (find-links initial-ziploc
-               ;; if we have a `### Links` starting point, use that.
-               (or (hs/select-next-loc (hs/id "show-links") initial-ziploc)
-                   initial-ziploc)))
-  ([_ current-ziploc]
-   (let [next-link (hs/select-next-loc
-                    (hs/tag :a)
-                    current-ziploc
-                    zip/next
-                    ;; continue scanning until end or `### End Links`
-                    #(or (zip/end? %)
-                         ((hs/id :end-links) %)))]
-     (when next-link
-       (lazy-seq (cons
-                  next-link
-                  (find-links (zip/next next-link))))))))
+  "Links to publish.
+
+  Scope is a deliberate design line, not an accident:
+
+    :show (default) - start at `### Show Links`. Everything above it is
+                      members-only material, so the public/regular feed gets
+                      only what is below the line.
+    :all            - start after the SPONSORS block, so heading links and
+                      news items above the line are included too. This is the
+                      members/bootleg variant.
+
+  Both stop at `### End Links` when present."
+  ([initial-ziploc] (find-links initial-ziploc {}))
+  ([initial-ziploc {:keys [scope] :or {scope :show}}]
+   (find-links-from
+    (case scope
+      :all (or (after-sponsors-loc initial-ziploc)
+               (hs/select-next-loc (hs/id "show-links") initial-ziploc)
+               initial-ziploc)
+      (or (hs/select-next-loc (hs/id "show-links") initial-ziploc)
+          initial-ziploc)))))
 
 (defn normalize-href
   "Prepend https:// to scheme-less hrefs that look like bare domains
@@ -115,19 +138,21 @@
                    (do (vswap! seen conj href) true))))
              (map #(update % :href normalize-href) links)))))
 
-(defn extract-links [md-zip]
-  (dedup-links
-   (into []
-         (comp
-          (map (fn [loc]
-                 (let [link-data (extract-link-data (zip/node loc))]
-                   (when (and (not (str/starts-with? (str (:title link-data)) "READ:"))
+(defn extract-links
+  ([md-zip] (extract-links md-zip {}))
+  ([md-zip opts]
+   (dedup-links
+    (into []
+          (comp
+           (map (fn [loc]
+                  (let [link-data (extract-link-data (zip/node loc))]
+                    (when (and (not (str/starts-with? (str (:title link-data)) "READ:"))
                               ;; A heading like [Part 1]() parses as a link
                               ;; with no href; posting it would push a null URL.
-                              (seq (:href link-data)))
-                     (assoc link-data :quote (get-related-blockquote loc))))))
-          (filter some?))
-         (find-links md-zip))))
+                               (seq (:href link-data)))
+                      (assoc link-data :quote (get-related-blockquote loc))))))
+           (filter some?))
+          (find-links md-zip opts)))))
 
 (defn extract-guest-data [link-node]
   {:name (inner-content link-node)
@@ -258,12 +283,24 @@
          vec)
     []))
 
-(defn- extract-single-meta [md-zip id]
+(defn- heading-node? [node]
+  (and (map? node)
+       (some? (:tag node))
+       (boolean (re-find #"^h[1-6]$" (name (:tag node))))))
+
+(defn- extract-single-meta
+  "Value of a #### Field section.
+
+  Returns nil when the field is empty: an empty section is followed by the
+  next heading, and reading that heading as the value turned a blank GUID into
+  the literal string Guests."
+  [md-zip id]
   (let [id-name (name id)]
     (when-let [ziploc (hs/select-next-loc (hs/id id-name) md-zip)]
-      ;; navigate to the next sibling that isn't a text node (if any) or just the next subtree
-      (let [val (inner-content (xmlhiccup->xmlparsed (zip/node (hs/after-subtree ziploc))))]
-        (if (string? val) (str/trim val) val)))))
+      (let [node (zip/node (hs/after-subtree ziploc))]
+        (when-not (heading-node? node)
+          (let [val (inner-content (xmlhiccup->xmlparsed node))]
+            (if (string? val) (str/trim val) val)))))))
 
 (defn dedupe-tags
   "Remove duplicate tags case-insensitively, preserving order. First
@@ -320,14 +357,16 @@
         xmlhiccup->xmlparsed
         hz/hickory-zip)))
 
-(defn parse-data-from-markdown [mdzip]
-  (assoc (extract-metadata mdzip)
-         :links
-         (extract-links mdzip)
-         :guests
-         (extract-guests mdzip)
-         :sponsors
-         (extract-sponsors mdzip)))
+(defn parse-data-from-markdown
+  ([mdzip] (parse-data-from-markdown mdzip {}))
+  ([mdzip opts]
+   (assoc (extract-metadata mdzip)
+          :links
+          (extract-links mdzip opts)
+          :guests
+          (extract-guests mdzip)
+          :sponsors
+          (extract-sponsors mdzip))))
 
 (defn -main
   "Invoke me with clojure -M -m noblepayne.link-hoarder"
