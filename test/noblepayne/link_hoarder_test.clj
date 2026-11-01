@@ -242,3 +242,21 @@
         (testing ":all is a superset"
           (is (every? all show))))
       (finally (.delete tmp)))))
+
+(deftest strip-tracking-params-test
+  (testing "tracking params go, real params stay"
+    (is (= "https://x.test/a?id=3"
+           (lh/strip-tracking-params "https://x.test/a?utm_source=chatgpt.com&id=3"))))
+  (testing "the fragment survives"
+    (is (= "https://x.test/a#frag"
+           (lh/strip-tracking-params "https://x.test/a?utm_source=x#frag"))))
+  (testing "an all-tracking query disappears entirely"
+    (is (= "https://x.test/a"
+           (lh/strip-tracking-params "https://x.test/a?fbclid=1&utm_medium=z"))))
+  (testing "a clean url is untouched"
+    (is (= "https://x.test/a?q=hi" (lh/strip-tracking-params "https://x.test/a?q=hi"))))
+  (testing "relative paths and anchors are left alone"
+    (is (= "/a?utm_source=x" (lh/strip-tracking-params "/a?utm_source=x")))
+    (is (= "#utm_source=x" (lh/strip-tracking-params "#utm_source=x"))))
+  (testing "normalize-href strips after adding the scheme"
+    (is (= "https://x.test/a?id=1" (lh/normalize-href "x.test/a?utm_source=q&id=1")))))

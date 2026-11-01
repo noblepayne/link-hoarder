@@ -118,9 +118,31 @@
       (or (hs/select-next-loc (hs/id "show-links") initial-ziploc)
           initial-ziploc)))))
 
+(def ^:private tracking-param
+  #"(?i)^(utm_[a-z_]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|si)=")
+
+(defn strip-tracking-params
+  "Remove campaign/click tracking params from an absolute URL, keeping every
+  other param and the fragment.
+
+  utm_* and friends are noise in show notes, and they leak where a link was
+  copied from. Done by string surgery rather than URI parsing so the rest of
+  the URL keeps its exact encoding."
+  [href]
+  (if (and (string? href)
+           (re-find #"^https?://" href)
+           (str/includes? href "?"))
+    (let [[base frag] (str/split href #"#" 2)
+          [path query] (str/split base #"\?" 2)
+          kept (remove #(re-find tracking-param %) (str/split query #"&"))]
+      (str path
+           (when (seq kept) (str "?" (str/join "&" kept)))
+           (when frag (str "#" frag))))
+    href))
+
 (defn normalize-href
   "Prepend https:// to scheme-less hrefs that look like bare domains
-  (e.g. connecteninternet.com/discount/Jupiter35).
+  (e.g. connecteninternet.com/discount/Jupiter35), and strip tracking params.
 
   Fireside drops scheme-less hrefs on save with no error, so without this
   the link silently vanishes from the episode while the scrape insists it
@@ -132,8 +154,9 @@
            (not (str/starts-with? href "#"))
            (re-find #"\." href)
            (not (re-find #"\s" href)))
-    (str "https://" href)
-    href))
+    ;; Add the scheme first: strip-tracking-params only touches absolute URLs.
+    (strip-tracking-params (str "https://" href))
+    (strip-tracking-params href)))
 
 (defn dedup-links
   "Normalize hrefs, then remove duplicates by :href, preserving document
