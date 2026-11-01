@@ -243,6 +243,11 @@ Apply with the episode guid echoed back — a mistyped commit is refused:
 `sync-episode-sponsors!` is plan+apply in one call, same options, for when the
 plan is boring.
 
+**Members preview is sponsor-free.** The `adfree`/bootleg feed is ad-free:
+render its preview with `(assoc members :sponsors [])` and never attach
+sponsorships to the `adfree` podcast. Only the link scope differs between the
+two scrapes.
+
 **Per-episode copy that must not be shared.** Sponsor copy is campaign-level
 (a sponsorship row has no message of its own). If the doc carries copy that
 should apply to this episode only, give it its own campaign and map it, or the
