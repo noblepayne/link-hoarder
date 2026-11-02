@@ -260,3 +260,19 @@
     (is (= "#utm_source=x" (lh/strip-tracking-params "#utm_source=x"))))
   (testing "normalize-href strips after adding the scheme"
     (is (= "https://x.test/a?id=1" (lh/normalize-href "x.test/a?utm_source=q&id=1")))))
+
+(deftest internal-links-filtered-test
+  ;; Stream Tease points at the working docs; it is scaffolding, not a show
+  ;; link, and must not reach any feed - including the members variant.
+  (let [md (str "#### SPONSORS\n\n- **[Acme](https://acme.test)**  \n  blurb\n\n"
+                "### Show Links\n\n"
+                "+ [Stream Tease - HedgeDoc](https://h.docs.lol/SD46XolSS2iqg?both)\n"
+                "+ [Real link](https://real.test/story)\n")
+        tmp (java.io.File/createTempFile "internal-probe" ".md")]
+    (try
+      (spit tmp md)
+      (let [all (lh/extract-links (lh/fetch-markdown (.getAbsolutePath tmp)) {:scope :all})
+            hrefs (set (map :href all))]
+        (is (contains? hrefs "https://real.test/story"))
+        (is (not (contains? hrefs "https://h.docs.lol/SD46XolSS2iqg?both"))))
+      (finally (.delete tmp)))))

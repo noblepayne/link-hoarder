@@ -173,6 +173,15 @@
                    (do (vswap! seen conj href) true))))
              (map #(update % :href normalize-href) links)))))
 
+(defn internal-link?
+  "True for links back into the working docs (h.docs.lol).
+
+  Stream Tease and similar are production scaffolding, not show notes, so they
+  must never reach a feed - including the members variant, which otherwise
+  scans everything above ### Show Links."
+  [href]
+  (boolean (re-find #"(?i)^https?://h\.docs\.lol/" (str href))))
+
 (defn extract-links
   ([md-zip] (extract-links md-zip {}))
   ([md-zip opts]
@@ -184,7 +193,8 @@
                     (when (and (not (str/starts-with? (str (:title link-data)) "READ:"))
                               ;; A heading like [Part 1]() parses as a link
                               ;; with no href; posting it would push a null URL.
-                               (seq (:href link-data)))
+                               (seq (:href link-data))
+                               (not (internal-link? (:href link-data))))
                       (assoc link-data :quote (get-related-blockquote loc))))))
            (filter some?))
           (find-links md-zip opts)))))
