@@ -699,8 +699,13 @@
   ([data] (save-preview-rendered data {}))
   ([data {:keys [suffix]}]
    (let [guid (:guid data)
+         ;; A placeholder GUID ("...") is not a filename: fall back to the
+         ;; episode number so the preview stays identifiable.
+         usable-guid (when (and guid (not (re-matches #"[.\s]*" (str guid)))) guid)
          stem (str "link-hoarder-rendered-"
-                   (or guid "episode")
+                   (or usable-guid
+                       (when (:episode data) (str "ep" (:episode data)))
+                       "episode")
                    (when suffix (str "-" suffix)))
          path (str "/dev/shm/" stem ".html")]
      (spit path (preview-rendered data))
