@@ -89,6 +89,14 @@ chapters 7/6, sponsors (Nebula + membership), 3 hosts + Seigo (34606), audio
 verified 7/7 + 6/6 (3 passes each — twice is a minimum, not a guarantee).
 Public-confirmed both pages. /tmp/data EDN + /tmp/data-desc-689.txt current.
 
+**691 "Fedora's Hidden Upgrades" — LIVE 2026-11-01 17:00 PST both feeds.**
+LUP `b13bcff0-5d43-46c9-af4e-b21fd70d4c88` / adfree
+`dd65a4e4-4da4-4394-bd52-0dcdbfdc6a08`. Doc https://h.docs.lol/jOSJo4utTca81tZNptDFfw.
+27 public links / 32 members, 7/7 chapters both, audio verified 7/7 (LUP 2 passes,
+adfree 3). Sponsors: Nebula 58s, Incogni 0s (copy reworded globally), Namecheap 0s,
+Hostinger 17m35s on the new **Hostinger Black Friday** campaign (2145) so 688 keeps
+its copy. 3 hosts, no guest.
+
 **690 "The S in PHP is for Security" — LIVE 2026-10-25 13:45 PDT both feeds.**
 LUP `001d7139-1aed-4d0f-9f38-91cbc11cda8b` / adfree
 `0d60a306-cdba-4e2c-99c7-2880056e48b9`. Doc https://h.docs.lol/TEIVKIcUSb2KpMUS9woTkg.
