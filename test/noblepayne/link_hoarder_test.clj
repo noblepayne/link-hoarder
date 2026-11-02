@@ -276,3 +276,36 @@
         (is (contains? hrefs "https://real.test/story"))
         (is (not (contains? hrefs "https://h.docs.lol/SD46XolSS2iqg?both"))))
       (finally (.delete tmp)))))
+
+(deftest pick-audit-test
+  ;; Feed contract: every pick (heading-level link in Picks) carries a
+  ;; Pick: prefix; supporting bullets are exempt; one prefixed link per pick.
+  (let [audit (fn [md]
+                (let [f (java.io.File/createTempFile "picks-probe" ".md")]
+                  (try (spit f md)
+                       (lh/pick-audit (lh/fetch-markdown (.getAbsolutePath f)))
+                       (finally (.delete f)))))]
+    (testing "a clean picks section passes"
+      (let [a (audit (str "## Picks\n\n### [Pick: Alpha](https://a.test)\n\n"
+                          "+ [repo](https://r.test)\n\n"
+                          "### [Bonus Pick: Beta](https://b.test)\n\n"
+                          "## Outro\n\n+ [nope](https://n.test)\n"))]
+        (is (= ["Pick: Alpha" "Bonus Pick: Beta"] (:picks a)))
+        (is (= 2 (count (:prefixed a))))
+        (is (empty? (:unprefixed a)))
+        (is (true? (:ok? a)))))
+    (testing "an unprefixed pick is flagged, and bullets are not"
+      (let [a (audit (str "## Picks\n\n### [Pick: Alpha](https://a.test)\n\n"
+                          "+ [repo](https://r.test)\n\n"
+                          "### [Beta](https://b.test)\n\n"
+                          "+ [repo b](https://rb.test)\n\n"
+                          "## Outro\n"))]
+        (is (= ["Pick: Alpha" "Beta"] (:picks a)))
+        (is (= ["Beta"] (:unprefixed a)))
+        (is (false? (:ok? a)))))
+    (testing "a stray Pick: bullet breaks the one-prefix-per-pick rule"
+      (let [a (audit (str "## Picks\n\n+ [Pick: Stray](https://s.test)\n\n"
+                          "### [Pick: Alpha](https://a.test)\n\n## Outro\n"))]
+        (is (= ["Pick: Alpha"] (:picks a)))
+        (is (= 2 (count (:prefixed a))))
+        (is (false? (:ok? a)))))))

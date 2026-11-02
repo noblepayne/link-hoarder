@@ -199,6 +199,67 @@
            (filter some?))
           (find-links md-zip opts)))))
 
+(defn pick-title?
+  "True when a link title carries a Pick-style prefix.
+
+  The feed's jb:pick detection keys on this prefix, so a picks-section link
+  without it is invisible downstream even though it publishes fine."
+  [title]
+  (boolean (re-find #"(?i)^\s*(bonus |double |triple )?pick:" (str title))))
+
+(defn- picks-section-nodes
+  "Nodes from after the Picks heading until the next h1/h2."
+  [md-zip]
+  (if-let [start (hs/select-next-loc (hs/id "picks") md-zip)]
+    (loop [loc (zip/next start) acc []]
+      (cond
+        (zip/end? loc) acc
+        (let [n (zip/node loc)]
+          (and (map? n) (contains? #{:h1 :h2} (:tag n)))) acc
+        :else (recur (zip/next loc) (conj acc (zip/node loc)))))
+    []))
+
+(defn picks-section-links
+  "Every link under the Picks heading, in document order (picks and the
+  supporting links beneath them)."
+  [md-zip]
+  (->> (picks-section-nodes md-zip)
+       (filter #(and (map? %) (= :a (:tag %))))
+       (mapv extract-link-data)))
+
+(defn pick-audit
+  "Audit the Picks section against the feed contract.
+
+  A pick is a heading-level link (the ### line). Every one must carry a
+  Pick-style prefix, because the feed's jb:pick detection keys on it.
+  Bullets under a pick (repo, Flathub, references) are supporting links and
+  are exempt. Also requires exactly one prefixed link per pick.
+
+  Returns {:picks [titles] :prefixed [titles] :unprefixed [titles] :ok? bool}."
+  [md-zip]
+  (let [nodes (picks-section-nodes md-zip)
+        title (fn [a] (str/trim (str (inner-content a))))
+        heading-links (->> nodes
+                           (filter #(and (map? %) (= :h3 (:tag %))))
+                           (mapcat #(hs/select (hs/tag :a) %)))
+        picks (mapv title heading-links)
+        prefixed (->> nodes
+                      (filter #(and (map? %) (= :a (:tag %))))
+                      (map title)
+                      (filter pick-title?)
+                      vec)
+        unprefixed (->> picks (remove pick-title?) vec)]
+    {:picks picks
+     :prefixed prefixed
+     :unprefixed unprefixed
+     :ok? (and (empty? unprefixed)
+               (= (count picks) (count prefixed)))}))
+
+(defn unprefixed-picks
+  "Picks-section heading links whose titles lack a Pick: prefix."
+  [md-zip]
+  (map (fn [t] {:title t}) (:unprefixed (pick-audit md-zip))))
+
 (defn extract-guest-data [link-node]
   {:name (unescape-markdown (inner-content link-node))
    :href (-> link-node :attrs :href)

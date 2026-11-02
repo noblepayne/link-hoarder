@@ -61,6 +61,20 @@ Verify before anything is pushed:
 Gate: title/description/tags/links correct in the preview. Cheap to fix here,
 expensive everywhere below.
 
+**Picks contract (feed dependency).** Every pick in the `## Picks` section must
+be a heading-level link whose title starts with `Pick:` (or `Bonus Pick:`,
+`Double Pick:`). The feed's `jb:pick` detection keys on that prefix, so an
+unprefixed pick publishes but is invisible downstream. Bullets under a pick
+(repo, Flathub, references) are supporting links and stay unprefixed. One
+prefixed link per pick.
+
+```clojure
+(lh/pick-audit (lh/fetch-markdown DOC-URL))
+;; => {:picks ["Pick: Hex" ...] :prefixed [...] :unprefixed [] :ok? true}
+```
+
+Flag it in review when `:ok?` is false — do not push picks links without it.
+
 ### Discover guids via the episodes list (when the doc guid is stale)
 
 Episode numbers are the Fireside slugs; guids come from the list page:
