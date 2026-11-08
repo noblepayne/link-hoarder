@@ -33,6 +33,9 @@ complete record. Start there, not in /tmp.
 - LUP: publish immediately — Public + publish time snapped DOWN to quarter-hour PT.
 - Hosts default: Chris 1848, Wes 1849, Brent 2108. NO guests unless named.
   (`set-participants!`; adfree podcast has no roster at all.)
+- Three editions: LUP and ad-free **share the same links** (`:scope :show`);
+  the members edition gets the extra above-the-line links (`:scope :all`) and
+  is NOT published. Sponsors on LUP only.
 - Sponsor copy lives in the doc's `#### SPONSORS` block; `sync-episode-sponsors!`
   reconciles it (create + message + attach). A leading "Name:" is stripped by
   the parser, because the site renders the title as a heading. Script stays blank.
