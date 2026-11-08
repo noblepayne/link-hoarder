@@ -92,6 +92,14 @@ chapters 7/6, sponsors (Nebula + membership), 3 hosts + Seigo (34606), audio
 verified 7/7 + 6/6 (3 passes each — twice is a minimum, not a guarantee).
 Public-confirmed both pages. /tmp/data EDN + /tmp/data-desc-689.txt current.
 
+**692 "Ubuntu's Core Reset" — LIVE 2026-11-08. Ad-free 08:00 PST, main 08:45 PST.**
+LUP `369cb64a-440a-4255-ae7f-ad8433eed283` / adfree
+`288ac143-955f-4995-91b5-8fcf1ffb4716`. Doc https://h.docs.lol/ad5Q-NjaRQCaG1Jfm3go9Q.
+43 links both feeds, 70 tags, 7/7 chapters, audio verified 7/7 (LUP 3 passes,
+adfree 2). Guest Jon Seager (31952). Sponsors: Nebula 45s, Incogni 0s,
+Namecheap 0s, Hostinger 22m50s on Hostinger Black Friday. Note: the Ads FLAC
+needed ffmpeg to decode — `flac -d` failed on metadata though `flac -t` passed.
+
 **691 "Fedora's Hidden Upgrades" — LIVE 2026-11-01 17:00 PST both feeds.**
 LUP `b13bcff0-5d43-46c9-af4e-b21fd70d4c88` / adfree
 `dd65a4e4-4da4-4394-bd52-0dcdbfdc6a08`. Doc https://h.docs.lol/jOSJo4utTca81tZNptDFfw.
