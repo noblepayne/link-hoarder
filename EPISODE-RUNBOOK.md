@@ -257,10 +257,19 @@ Apply with the episode guid echoed back — a mistyped commit is refused:
 `sync-episode-sponsors!` is plan+apply in one call, same options, for when the
 plan is boring.
 
-**Members preview is sponsor-free.** The `adfree`/bootleg feed is ad-free:
-render its preview with `(assoc members :sponsors [])` and never attach
-sponsorships to the `adfree` podcast. Only the link scope differs between the
-two scrapes.
+**Three editions, two published.** LUP and ad-free **share the same links**
+(`:scope :show`). The members/bootleg edition is a third thing: it gets the
+extra above-the-line links (`:scope :all`) and is **not published yet**. Never
+attach sponsorships to `adfree` — and the members edition is sponsor-free too.
+
+| Edition | Links | Sponsors | Published |
+|---|---|---|---|
+| LUP (`linuxunplugged`) | `:scope :show` | yes, main only | yes |
+| Ad-free (`adfree`) | `:scope :show` (same as LUP) | no | yes |
+| Members | `:scope :all` | no | no |
+
+Preview the members edition with `(assoc members :sponsors [])` for review
+only; do not sync its links to `adfree`.
 
 **Per-episode copy that must not be shared.** Sponsor copy is campaign-level
 (a sponsorship row has no message of its own). If the doc carries copy that
