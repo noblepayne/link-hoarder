@@ -642,6 +642,14 @@
        :links (preview-links data)
        (preview-full data)))))
 
+(defn- preview-stem
+  "Filename stem for a preview. A placeholder GUID (\"...\") is not a
+  filename, so fall back to the episode number to keep the file identifiable."
+  [{:keys [guid episode]}]
+  (or (when (and guid (not (re-matches #"[.\s]*" (str guid)))) guid)
+      (when episode (str "ep" episode))
+      "episode"))
+
 (defn save-preview
   "Save HTML preview to /dev/shm/link-hoarder-{guid}.html.
   Returns file:// URL for easy access.
@@ -649,10 +657,7 @@
   ([data]
    (save-preview data :full))
   ([data format]
-   (let [guid (:guid data)
-         filename (if guid
-                    (str "link-hoarder-" guid ".html")
-                    "link-hoarder.html")
+   (let [filename (str "link-hoarder-" (preview-stem data) ".html")
          path (str "/dev/shm/" filename)]
      (spit path (preview data format))
      (str "file://" path))))
@@ -664,10 +669,7 @@
   ([data]
    (save-markdown data :episode))
   ([data format]
-   (let [guid (:guid data)
-         filename (if guid
-                    (str "episode-links-" guid ".md")
-                    "episode-links.md")
+   (let [filename (str "episode-links-" (preview-stem data) ".md")
          path (str "/dev/shm/" filename)]
      (spit path (preview-markdown data format))
      (str "file://" path))))
@@ -769,14 +771,8 @@
   same episode do not overwrite each other."
   ([data] (save-preview-rendered data {}))
   ([data {:keys [suffix]}]
-   (let [guid (:guid data)
-         ;; A placeholder GUID ("...") is not a filename: fall back to the
-         ;; episode number so the preview stays identifiable.
-         usable-guid (when (and guid (not (re-matches #"[.\s]*" (str guid)))) guid)
-         stem (str "link-hoarder-rendered-"
-                   (or usable-guid
-                       (when (:episode data) (str "ep" (:episode data)))
-                       "episode")
+   (let [stem (str "link-hoarder-rendered-"
+                   (preview-stem data)
                    (when suffix (str "-" suffix)))
          path (str "/dev/shm/" stem ".html")]
      (spit path (preview-rendered data))

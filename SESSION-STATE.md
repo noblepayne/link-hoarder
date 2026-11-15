@@ -49,6 +49,31 @@ chapters CSVs. Missing any one of these blocks a feed, not the whole run.
 8. **Publish.** Ad-free and LUP can go separately; time snaps DOWN to the
    quarter hour Pacific. Confirm both public pages after.
 
+### /tmp/data payload contract (feed-fusion staging)
+
+`:status` is one of `:preliminary`, `:ready`, `:published`. `:final?` is true
+only at `:published`, so a consumer can tell "this is the payload that went
+live" from "this is a snapshot of work in progress".
+
+`:checks` carries one verdict per section — `:ok`, `:partial`, or `:pending` —
+and `:pending` lists every section that is not `:ok` (`:partial` counts as
+pending). `:updated-at` is ISO-8601 with the Pacific offset.
+
+| Section | `:ok` means |
+|---|---|
+| `:meta` | title and description non-blank |
+| `:links` | both feeds carry the same count as the doc's show set |
+| `:tags` | more than the four house tags (4 = `:partial`, episode tags missing) |
+| `:participants` | hosts written to the main feed |
+| `:chapters` | both feeds have the same positive chapter count |
+| `:audio` | `mp3-status` reports a URL and no error on both feeds |
+| `:sponsors` | main feed has at least as many sponsorships as the doc lists |
+
+Treat a section as trustworthy only when its check is `:ok`; anything else
+means the value is a draft. Sponsor `:timecode` stays nil until the Ads CSV
+lands, and `:campaign` may change at `apply-plan!` time (e.g. Hostinger's
+sale campaign) — those are decided against live copy, not guessed here.
+
 ## Episode state (all live, all verified on public pages)
 
 - **687** LUP `c77dd843-0a44-4dec-9439-6e7a78f340a6` / adfree `12359b43-105b-4997-926c-b5eb2d9f8b27`:
