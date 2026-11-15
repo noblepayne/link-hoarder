@@ -16,6 +16,39 @@ complete record. Start there, not in /tmp.
 - Checks: `clojure -X:test`, `nix run nixpkgs#cljfmt -- check src/ test/`,
   `nix run nixpkgs#clj-kondo -- --lint src test` (currently zero/zero).
 
+## Fresh episode checklist (693+)
+
+Inputs needed before starting: doc URL, Fireside drafts on both feeds (guids),
+and the workdir bundle: `(Ads)` + `(Premium)` FLACs, `(Ads)` Ads.csv, and both
+chapters CSVs. Missing any one of these blocks a feed, not the whole run.
+
+1. **Scrape.** `(prepare-data DOC podcast {:scope :show})` is the published set;
+   `{:scope :all}` is the members edition (never published). LUP and ad-free
+   share the show set.
+2. **Doc gates.** `(lh/pick-audit zip)` must be `:ok? true` (every pick heading
+   starts with `Pick:`/`Bonus Pick:`). Title must be one line — multi-line
+   titles concatenate. Check tag count; a 4-tag tail means the audit hasn't run.
+3. **Fireside sync.** set-show-meta both feeds; purge+add links both (show
+   scope); sync each feed's own chapters CSV; set-participants! with the three
+   hosts plus the guest's numeric checkbox id (look it up on the edit page —
+   the person UUID is not the checkbox value).
+4. **Sponsors (main only).** Timecodes come from the Ads CSV. `plan-sponsors`
+   first, read `:op`/`:new-sponsor?`, then `apply-plan!` with `:commit?` equal
+   to the episode guid. Sale/episode-specific copy gets its own campaign
+   (`create-campaign!`) so past episodes keep theirs.
+5. **Encode.** `ffmpeg -i in.flac -c:a pcm_s16le out.wav` then
+   `lame -m j --lowpass 20.5 -q 0 -b 128 --tn <EP>`. Do NOT rely on `flac -d`:
+   it failed on 692 with a metadata END_OF_STREAM error while `flac -t` passed.
+   Delete WAVs immediately; encode sequentially when disk is tight.
+6. **Audio.** `upload-and-verify-mp3` in a loop up to 4 passes per feed; the
+   first passes come back chapterless. Success is `:report {:verified true}`.
+7. **/tmp/data.** Write the 17-key payload (guid, title, description, tags,
+   sponsors with Fireside identity, guests, links, links-members,
+   sponsorships, episode, show, doc, lup-guid, adfree-guid, chapters, audio,
+   published) and update it as each phase lands. feed-fusion consumes it.
+8. **Publish.** Ad-free and LUP can go separately; time snaps DOWN to the
+   quarter hour Pacific. Confirm both public pages after.
+
 ## Episode state (all live, all verified on public pages)
 
 - **687** LUP `c77dd843-0a44-4dec-9439-6e7a78f340a6` / adfree `12359b43-105b-4997-926c-b5eb2d9f8b27`:
