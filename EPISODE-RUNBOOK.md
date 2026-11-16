@@ -29,6 +29,13 @@ Conventions: `EP` = episode number, e.g. `687`. All REPL snippets assume
   Feed ↔ file mapping: `linuxunplugged` = `(Ads)` file, `adfree` = `(Premium)` file.
   Timings differ between the two (ad reads shift everything) — never push one
   feed's CSV to the other feed.
+- **Filenames are a convention, not a guarantee.** The bundle comes from a
+  human editor, and a long day shows up as naming variance: 693 arrived as
+  `Linux Unplugged 693.flac` (Ads) beside `Linux Unplugged 693 (Premium).flac`,
+  with no `(Ads)` suffix at all. Before encoding, `ffprobe` both FLACs and use
+  the durations plus the chapter CSVs to decide which is which — the Ads cut
+  is the longer one, and its chapters line up with the Ads CSV. Rename to the
+  convention once identified so the rest of the run stays mechanical.
 - Run tests first: `clojure -X:test`. Must be green before touching Fireside.
 
 ## 1. Scrape show notes (one scrape per feed)

@@ -139,6 +139,12 @@ sale campaign) — those are decided against live copy, not guessed here.
    the campaign edit page. `add-sponsorship` resolves uuid -> numeric itself.
    Known ids: Nebula "Managed Nebula" 2069, Hostinger "Hostinger AI Builder"
    2142, Incogni 2143, Namecheap 2144.
+10. Workdir filenames reflect a human editor, not a schema. 693 arrived as
+   `Linux Unplugged 693.flac` (the Ads cut) next to `Linux Unplugged 693
+   (Premium).flac`, with no `(Ads)` suffix — the editor had a long day. Never
+   infer the feed from the filename: `ffprobe` both FLACs, pick the longer one
+   as Ads, confirm against the two chapter CSVs, then rename to the convention
+   before encoding. Cheap check, expensive mistake.
 
 ## Open / deferred (not blockers)
 
