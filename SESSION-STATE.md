@@ -75,6 +75,16 @@ lands, and `:campaign` may change at `apply-plan!` time (e.g. Hostinger's
 sale campaign) — those are decided against live copy, not guessed here.
 
 ## Episode state (all live, all verified on public pages)
+- **693 "Two Cities, One Linux" — LIVE 2026-11-15 21:15 PST, both feeds
+  together.** LUP `8bb69d65-59ba-4ac8-b186-1ce10e9819a2` / adfree
+  `0b17b3f2-83dc-4127-b709-1898c2959d80`. Doc
+  https://h.docs.lol/tLR5yvPgSvCfAmfN1SaoLg. 41 links both feeds (45 members),
+  90 tags, 7/7 chapters each feed's own CSV, audio verified 7/7 on the first
+  pass for both. Sponsors: Nebula 52s, Incogni 0s, Namecheap 0s, Hostinger
+  28m03s on Hostinger Black Friday. The Ads FLAC is named
+  `Linux Unplugged <EP>.flac` (no "(Ads)" suffix) — ffprobe the pair before
+  encoding rather than trusting the filename.
+
 
 - **687** LUP `c77dd843-0a44-4dec-9439-6e7a78f340a6` / adfree `12359b43-105b-4997-926c-b5eb2d9f8b27`:
   Public since 2026-10-04. 15 links, 7 chapters, LUP sponsors (membership,
