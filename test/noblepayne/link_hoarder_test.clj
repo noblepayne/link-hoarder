@@ -277,6 +277,41 @@
         (is (not (contains? hrefs "https://h.docs.lol/SD46XolSS2iqg?both"))))
       (finally (.delete tmp)))))
 
+(deftest private-address-filtered-test
+  ;; The Boosts admin page lives on a tailnet IP. It parses as a perfectly
+  ;; ordinary link, so only an address check keeps it off the feed.
+  (testing "private and loopback addresses are not publishable"
+    (doseq [href ["http://100.120.212.39:3223/boosts?show=lup"
+                  "http://localhost:8080/x"
+                  "http://127.0.0.1/x"
+                  "http://10.1.2.3/x"
+                  "http://192.168.1.10/x"
+                  "http://172.16.5.4/x"
+                  "http://172.31.0.1/x"
+                  "http://169.254.1.1/x"
+                  "http://nas.local/x"
+                  "http://[::1]/x"]]
+      (is (lh/private-address? href) href)))
+  (testing "public addresses and near-misses stay publishable"
+    (doseq [href ["https://linuxunplugged.com/693"
+                  "https://100.128.0.1/x"   ; just outside CGNAT
+                  "https://172.15.0.1/x"
+                  "https://172.32.0.1/x"
+                  "https://192.169.0.1/x"
+                  "https://localhost.example.com/x"]]
+      (is (not (lh/private-address? href)) href)))
+  (testing "extract-links drops them from both scopes"
+    (let [md (str "### Show Links\n\n"
+                  "+ [Boosts!](http://100.120.212.39:3223/boosts?show=lup)\n"
+                  "+ [Real link](https://real.test/story)\n")
+          tmp (java.io.File/createTempFile "private-probe" ".md")]
+      (try
+        (spit tmp md)
+        (let [show (set (map :href (lh/extract-links (lh/fetch-markdown (.getAbsolutePath tmp)) {:scope :show})))]
+          (is (contains? show "https://real.test/story"))
+          (is (not-any? #(str/includes? % "100.120.212.39") show)))
+        (finally (.delete tmp))))))
+
 (deftest pick-audit-test
   ;; Feed contract: every pick (heading-level link in Picks) carries a
   ;; Pick: prefix; supporting bullets are exempt; one prefixed link per pick.

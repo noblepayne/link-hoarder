@@ -1,0 +1,62 @@
+;; LUP sponsor identities for episode 694 onward (2026-11-20)
+;;
+;; Supersedes sponsors/lup-690-693.edn for anything new here. The old file is
+;; still correct for 690-693; do not edit it, or past episodes change.
+;;
+;; Aura Frames is a NEW sponsor created 2026-11-20 by `onboard-sponsor!`. It
+;; did not exist in Fireside before this episode, so nothing older references
+;; it. Namecheap and Hostinger both changed copy for the Black Friday sale, and
+;; that copy is episode-scoped: their shared campaigns stay untouched so 692 and
+;; 693 keep rendering what they rendered. Attach the sale campaigns by title.
+;;
+;; `:title` stays an exact-match join key against the doc / Ads CSV name.
+
+{:podcast "linuxunplugged"
+
+ :sponsors
+ {:nebula      {:title "Nebula"
+                :sponsor-uuid "a3f4a2d6-ee25-4c6e-8e0e-0692988d7283"
+                :campaign-title "Managed Nebula"
+                :campaign-uuid "5723f24c-7462-4f14-99b4-fa90c7a153a5"
+                :campaign-id "2069"
+                :message "Meet Managed Nebula from Defined Networking. A decentralized VPN built on the open-source Nebula platform that we love."}
+
+  ;; No Ads CSV row until 694's CSV lands; attach at the ART19 slot time.
+  :aura-frames {:title "Aura Frames"
+                :url "https://auraframes.com"
+                :promo "UNPLUGGED"
+                :sponsor-uuid "a82eb3f6-add3-4d86-ab31-a6dbdeff6a61"
+                :campaign-title "Aura Frames"
+                :campaign-uuid "c73701d7-5832-4f0c-93c2-c076aef31c41"
+                :message "The 10-inch Aura Ink is a cordless e-paper photo frame. Get up to $50 off select frames plus $5 more with code UNPLUGGED at AuraFrames.com."}
+
+  ;; Shared campaign (used since 690) — still the default for non-sale copy.
+  :namecheap   {:title "Namecheap"
+                :sponsor-uuid "73895a00-1c01-470d-89ff-d88e8de5d17b"
+                :campaign-title "Namecheap"
+                :campaign-uuid "d1b35717-961d-4321-b796-8c1dc82ef63d"
+                :campaign-id "2144"
+                :message "Use code UNPLUGGED for an extra 15% off VPS hosting."
+                :sale-campaign {:campaign-title "Namecheap Black Friday"
+                                :campaign-uuid "7dceeaf2-68ae-4c15-96aa-1abe026e54c1"
+                                :message "Big Black Friday deals: up to 99% off domains, 80% off hosting, 50% off professional email, and up to 54% off VPS hosting. Head to namecheap.promo/unplugged to see the deals and find the promo codes."}}
+
+  :hostinger   {:title "Hostinger"
+                :sponsor-uuid "8bfb1e79-a40f-4352-91cb-725df5f56da2"
+                :campaign-title "Hostinger AI Builder"
+                :campaign-uuid "94e7e1f4-80fe-4cea-a39d-d6521027f2f6"
+                :campaign-id "2142"
+                :sale-campaign {:campaign-title "Hostinger Black Friday"
+                                :campaign-uuid "19bfe024-0a91-4820-82c1-cbe90a6ead42"
+                                :campaign-id "2145"
+                                :episodes "692, 693"
+                                :message "Snag Hostinger services at their lowest prices before the sale ends! Create your website today for just $1.99. Go to Hostinger.com/UNPLUGGED and use code UNPLUGGED for an additional 10% off Black Friday and Cyber Monday pricing."}
+                :bfcm-2026 {:campaign-title "Hostinger BFCM 2026"
+                            :campaign-uuid "600559e0-888a-4f87-86a1-73052013f11c"
+                            :episodes "694+"
+                            :message "Black Friday and Cyber Monday pricing is on now through December 14: create your website today for just $1.99/mo. Go to Hostinger.com/UNPLUGGED and use code UNPLUGGED for an additional 10% off BFCM pricing."}}}
+
+ ;; Map doc sponsor name -> campaign title when the episode uses sale copy.
+ :campaign-titles-by-episode
+ {694 {"Namecheap" "Namecheap Black Friday"
+       "Hostinger" "Hostinger BFCM 2026"}}}

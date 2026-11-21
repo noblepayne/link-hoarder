@@ -182,6 +182,43 @@
   [href]
   (boolean (re-find #"(?i)^https?://h\.docs\.lol/" (str href))))
 
+(defn- url-host
+  "Host part of an absolute URL, without credentials, port, or brackets."
+  [href]
+  (when-let [m (re-find #"(?i)^[a-z][a-z0-9+.-]*://(?:[^@/?#]*@)?(\[[^\]]+\]|[^:/?#]+)" (str href))]
+    (-> (second m)
+        (str/replace #"^\[|\]$" "")
+        str/lower-case)))
+
+(defn private-address?
+  "True for links that only resolve on the operator's own network: loopback,
+  RFC1918, CGNAT/Tailscale (100.64.0.0/10), link-local, and .local names.
+
+  A Boosts admin page lives on a tailnet IP, so without this the internal URL
+  ships to the feed and means nothing to a listener. Same class of mistake as
+  h.docs.lol: operator scaffolding that looks like a show link."
+  [href]
+  (let [h (url-host href)]
+    (boolean
+     (and h
+          (or (= h "localhost")
+              (= h "::1")
+              (str/ends-with? h ".local")
+              (re-matches #"127\.\d{1,3}\.\d{1,3}\.\d{1,3}" h)
+              (re-matches #"10\.\d{1,3}\.\d{1,3}\.\d{1,3}" h)
+              (re-matches #"192\.168\.\d{1,3}\.\d{1,3}" h)
+              (re-matches #"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}" h)
+              (re-matches #"169\.254\.\d{1,3}\.\d{1,3}" h)
+              (re-matches #"100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}" h)
+              (str/starts-with? h "fc")
+              (str/starts-with? h "fd")
+              (str/starts-with? h "fe80"))))))
+
+(defn unpublishable-link?
+  "Links that must never reach a feed: internal docs and private addresses."
+  [href]
+  (or (internal-link? href) (private-address? href)))
+
 (defn extract-links
   ([md-zip] (extract-links md-zip {}))
   ([md-zip opts]
@@ -194,7 +231,7 @@
                               ;; A heading like [Part 1]() parses as a link
                               ;; with no href; posting it would push a null URL.
                                (seq (:href link-data))
-                               (not (internal-link? (:href link-data))))
+                               (not (unpublishable-link? (:href link-data))))
                       (assoc link-data :quote (get-related-blockquote loc))))))
            (filter some?))
           (find-links md-zip opts)))))

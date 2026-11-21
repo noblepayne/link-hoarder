@@ -145,6 +145,12 @@ sale campaign) — those are decided against live copy, not guessed here.
    infer the feed from the filename: `ffprobe` both FLACs, pick the longer one
    as Ads, confirm against the two chapter CSVs, then rename to the convention
    before encoding. Cheap check, expensive mistake.
+11. Operator scaffolding hides in plain links. 694's doc carried
+   `Boosts!` -> `http://100.120.212.39:3223/...`, a tailnet address that
+   parses as an ordinary link and would have shipped to both feeds.
+   `unpublishable-link?` now drops private/loopback/CGNAT/.local addresses
+   alongside h.docs.lol; if a new internal endpoint appears, extend that
+   predicate, not the doc.
 
 ## Open / deferred (not blockers)
 
