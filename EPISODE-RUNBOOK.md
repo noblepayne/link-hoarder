@@ -264,6 +264,32 @@ Apply with the episode guid echoed back — a mistyped commit is refused:
 `sync-episode-sponsors!` is plan+apply in one call, same options, for when the
 plan is boring.
 
+### 5c. Two-step attach when the Ads CSV is late (preferred)
+
+Timings are the only part of a sponsorship that needs the Ads CSV. Don't let a
+late CSV hold up the rest: attach first, retime second. That also gives the
+team a stable, checkable list of sponsor → campaign pairs to review while the
+audio is still being cut.
+
+1. **Attach at `0s`** with no `:timecodes` entry. The plan's `:op` should be
+   `:attach` for every sponsor; check `:unexpected` and `:new-sponsor?` as
+   always. If the episode uses sale copy, pin the campaign with
+   `:campaign-titles` (see `sponsors/lup-694.edn`) so a shared campaign is not
+   rewritten for past episodes.
+2. **Have the team check** `fetch-sponsorship-ids` — name, campaign and guid
+   are all visible before any timing exists. This is the point of splitting
+   the steps.
+3. **Retimes second**, once the Ads CSV lands, with `sync-sponsorship-times`
+   once per sponsor that has a CSV row. It updates in place by sponsor name,
+   never creates a duplicate, and leaves the campaign alone. Sponsors that
+   only run in ART19 dynamic slots (Aura Frames, historically Incogni and
+   Namecheap) may stay at `0s` — a 0s timecode is legitimate for those.
+
+In `/tmp/data` these are two separate checks: `:sponsors` is `:ok` once all
+four rows are attached, `:sponsor-times` stays `:pending` until a fixed-slot
+sponsor has a non-empty timecode. A payload with `:sponsors :ok` but
+`:sponsor-times :pending` is expected mid-prep, not an error.
+
 **Three editions, two published.** LUP and ad-free **share the same links**
 (`:scope :show`). The members/bootleg edition is a third thing: it gets the
 extra above-the-line links (`:scope :all`) and is **not published yet**. Never

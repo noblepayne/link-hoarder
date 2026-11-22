@@ -109,6 +109,11 @@ sale campaign) — those are decided against live copy, not guessed here.
   the parser, because the site renders the title as a heading. Script stays blank.
 - Every doc update = full resync (meta + links) + fresh previews.
 - Publish approval always required. Never auto-publish.
+- Sponsor prep is two steps when the Ads CSV is late: attach all sponsors at
+  `0s` with the right campaigns, let the team verify the list, then retime from
+  the CSV with `sync-sponsorship-times`. `/tmp/data` tracks these separately as
+  `:sponsors` and `:sponsor-times`. Never rewrite a shared campaign for one
+  episode's copy — pin a sale campaign via `:campaign-titles`.
 
 ## Proven gotchas (all in code comments + tests — this is the index)
 
