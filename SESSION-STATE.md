@@ -75,6 +75,17 @@ lands, and `:campaign` may change at `apply-plan!` time (e.g. Hostinger's
 sale campaign) — those are decided against live copy, not guessed here.
 
 ## Episode state (all live, all verified on public pages)
+- **694 "First Class Citizen" — LIVE 2026-11-22 16:30 PST, both feeds
+  together.** LUP `3a6bfa32-e8f6-4294-8063-48db521d2092` / adfree
+  `74d2e017-2460-496b-9dc2-0dc3270413b8`. Doc
+  https://h.docs.lol/gDJ6OEkQTQ2RQS0Ag0OwQQ. 40 links both feeds (49 members),
+  72 tags, 6/6 chapters each feed's own CSV, audio verified on the first pass
+  for both. Sponsors attached at 0s for team review, then retimed: Nebula 50s,
+  Aura Frames 24m53s, Hostinger BFCM 2026 39m57s, Namecheap 0s (no CSV row).
+  Aura Frames is canonical; the Ads CSV shorthand "Aura" is editor-side only.
+  Doc moved repeatedly during prep — one scrape now feeds Fireside, previews
+  and /tmp/data together so artifacts cannot disagree.
+
 - **693 "Two Cities, One Linux" — LIVE 2026-11-15 21:15 PST, both feeds
   together.** LUP `8bb69d65-59ba-4ac8-b186-1ce10e9819a2` / adfree
   `0b17b3f2-83dc-4127-b709-1898c2959d80`. Doc
