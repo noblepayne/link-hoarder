@@ -156,6 +156,11 @@ sale campaign) — those are decided against live copy, not guessed here.
    `unpublishable-link?` now drops private/loopback/CGNAT/.local addresses
    alongside h.docs.lol; if a new internal endpoint appears, extend that
    predicate, not the doc.
+12. `sync-sponsorship-times` matches the Ads CSV name to the Fireside sponsor
+   title EXACTLY. 694's CSV says "Aura", the doc and sponsor say "Aura Frames",
+   so the helper finds no row — retime that one by sponsorship guid with
+   `set-sponsorship-timecode`. Check CSV names against sponsor titles before a
+   retime pass. Namecheap had no CSV row at all and stays at 0s by design.
 
 ## Open / deferred (not blockers)
 

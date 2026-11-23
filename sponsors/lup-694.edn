@@ -21,7 +21,11 @@
                 :campaign-id "2069"
                 :message "Meet Managed Nebula from Defined Networking. A decentralized VPN built on the open-source Nebula platform that we love."}
 
-  ;; No Ads CSV row until 694's CSV lands; attach at the ART19 slot time.
+  ;; NAME ALIAS: the 694 Ads CSV calls this sponsor "Aura", while the doc and
+  ;; Fireside sponsor title are "Aura Frames". `sync-sponsorship-times` matches
+  ;; by exact name and cannot bridge that gap — retime by sponsorship guid with
+  ;; `set-sponsorship-timecode` instead (694: 24m 53s). Namecheap has no CSV row
+  ;; (ART19 dynamic insert) and legitimately stays at 0s.
   :aura-frames {:title "Aura Frames"
                 :url "https://auraframes.com"
                 :promo "UNPLUGGED"
